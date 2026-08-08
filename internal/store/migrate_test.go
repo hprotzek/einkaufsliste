@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hprotzek/einkaufsliste/internal/store"
+	"github.com/hprotzek/einkaufsliste/migrations"
 )
 
 // baseDSN points at a real Postgres for the whole package. Never a mock — see
@@ -139,12 +141,16 @@ func TestMigrateAppliesSchema(t *testing.T) {
 		t.Fatalf("migrating: %v", err)
 	}
 
+	// Derived from the embedded files rather than hardcoded, so adding a
+	// migration does not break a test that has nothing to do with it.
+	want := countMigrations(t)
+
 	var version int64
 	if err := pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version").Scan(&version); err != nil {
 		t.Fatalf("reading schema version: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("schema version = %d, want 1", version)
+	if version != want {
+		t.Errorf("schema version = %d, want %d (one per file in migrations/)", version, want)
 	}
 
 	// The migration's actual effect, not just its bookkeeping.
@@ -170,20 +176,48 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	defer pool.Close()
 
+	countApplied := func(when string) int {
+		var applied int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM goose_db_version WHERE version_id > 0").Scan(&applied); err != nil {
+			t.Fatalf("counting applied migrations %s: %v", when, err)
+		}
+		return applied
+	}
+
 	if err := store.Migrate(ctx, pool, discardLogger()); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
+	first := countApplied("after the first run")
+
 	if err := store.Migrate(ctx, pool, discardLogger()); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
+	second := countApplied("after the second run")
 
-	var applied int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM goose_db_version WHERE version_id > 0").Scan(&applied); err != nil {
-		t.Fatalf("counting applied migrations: %v", err)
+	// Idempotency is "the second run changed nothing", not any particular
+	// count — which also keeps this honest as migrations are added.
+	if second != first {
+		t.Errorf("applied migrations went from %d to %d; the second run re-applied something", first, second)
 	}
-	if applied != 1 {
-		t.Errorf("applied migrations = %d, want 1 — the second run re-applied something", applied)
+	if first != int(countMigrations(t)) {
+		t.Errorf("applied %d migrations, but migrations/ holds %d", first, countMigrations(t))
 	}
+}
+
+// countMigrations counts the embedded .sql files, which is what goose applies.
+func countMigrations(t *testing.T) int64 {
+	t.Helper()
+
+	entries, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatalf("listing migrations: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no migrations found; the embed pattern is wrong")
+	}
+
+	return int64(len(entries))
 }
 
 func TestNewPoolRejectsMalformedDSN(t *testing.T) {
