@@ -724,7 +724,7 @@ The spec has so far described the app working. Most of the felt quality of an of
 
 ## 11. Testing strategy
 
-Testing is a first-class requirement here, not a phase at the end. The guiding rule: **test at the layer where the logic actually lives, and don't mock anything you can cheaply run for real.** Containers make a real Postgres and a real Redis available in milliseconds; a mocked database only ever tests your mock.
+Testing is a first-class requirement here, not a phase at the end. The guiding rule: **test at the layer where the logic actually lives, and don't mock anything you can cheaply run for real.** Containers make a real Postgres available in milliseconds; a mocked database only ever tests your mock.
 
 ### 11.1 Backend layers
 
@@ -735,7 +735,7 @@ Testing is a first-class requirement here, not a phase at the end. The guiding r
 | **Service** | Authorisation across the two-hop hierarchy (household → list → item), cross-household isolation, business flows, idempotency | Real store, fake clock, fake OIDC issuer |
 | **Transport** (HTTP) | Routing, status codes, error shapes, auth middleware, rate limits | `httptest` against the real chi router and real DB |
 | **Contract** | Responses actually match `openapi.yaml` | `kin-openapi` validating middleware enabled in the test suite; CI fails if generated code drifts from the spec |
-| **Realtime** | WS fan-out, multi-subscriber delivery, disconnect mid-broadcast, Redis pub/sub across two API instances | Real Redis in a container; spin up two API instances in-process |
+| **Realtime** | WS fan-out, multi-subscriber delivery, disconnect mid-broadcast, fan-out through the `Broadcaster` interface | In-process `Broadcaster` with multiple subscribers in one process; no external broker to stand up (§5.2) |
 
 Run everything with `-race`, always, not just in CI. Concurrency bugs in the sync path are exactly the kind that pass a hundred serial tests.
 
@@ -810,7 +810,7 @@ The project lives in a **public GitHub repository**, which on the free plan give
 
 ### 12.2 Workflows
 
-- `ci.yml` — on PR and push: `golangci-lint`, `go vet`, `go test -race ./...` with a Postgres and Redis **service container**, OpenAPI drift check, web typecheck and unit tests, Playwright E2E. Matrix across Go versions if you like; it costs nothing.
+- `ci.yml` — on PR and push: `golangci-lint`, `go vet`, `go test -race ./...` with a Postgres **service container**, OpenAPI drift check, web typecheck and unit tests, Playwright E2E. Matrix across Go versions if you like; it costs nothing.
 - `conformance.yml` — the §11.2 sync suite, split out so a failure is unmistakable.
 - `codeql.yml` — weekly plus on PR.
 - `release.yml` — on tag: build multi-arch images (`linux/amd64`, `linux/arm64`), push to GHCR, create a release.
@@ -876,7 +876,7 @@ If this ever goes beyond the family, revisit — the metrics that would matter a
 
 | Phase | Scope | Notes |
 |---|---|---|
-| 0 | Public repo, LICENSE, push protection, branch protection, Compose, Postgres, Redis, goose, OpenAPI + codegen, CI green on an empty service | get the pipeline working before there is anything to break |
+| 0 | Public repo, LICENSE, push protection, branch protection, Compose, Postgres, goose, OpenAPI + codegen, CI green on an empty service | get the pipeline working before there is anything to break |
 | 1 | Auth: **Google only**, own tokens, `/me`, linking logic tested against a fake issuer | riskiest piece — do it early; §9.1 |
 | 2 | Households (one per user, no invites yet), lists, **full schema including `stores` and `catalog_items`** | the hierarchy and the tables are cheap now, brutal to retrofit |
 | 3 | Items CRUD, snapshot endpoint, **`item_events` log writing from the first commit** | cannot be backfilled — this is the one thing that must not slip |

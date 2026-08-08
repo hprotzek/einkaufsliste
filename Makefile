@@ -1,6 +1,10 @@
 BINARY := bin/api
 
-.PHONY: help build run test vet tidy clean migrate generate lint
+# Single source of truth for the linter version, shared with ci.yml so a local
+# run and a CI run cannot disagree.
+GOLANGCI_LINT_VERSION := $(shell cat .golangci-lint-version)
+
+.PHONY: help build run test vet lint tidy clean migrate generate
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -19,6 +23,14 @@ test: ## Run all tests with the race detector
 vet: ## Run go vet
 	go vet ./...
 
+lint: ## Run golangci-lint (version from .golangci-lint-version)
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint not found. Install the pinned version with:"; \
+		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)"; \
+		exit 1; \
+	}
+	golangci-lint run
+
 tidy: ## Sync go.mod and go.sum
 	go mod tidy
 
@@ -35,8 +47,4 @@ migrate: ## goose up (task 0.4)
 
 generate: ## sqlc + oapi-codegen + openapi-typescript (tasks 0.5 and 0.9)
 	@echo "generate: not wired yet — sqlc arrives with task 0.5, codegen with task 0.9"
-	@exit 1
-
-lint: ## golangci-lint (task 0.6)
-	@echo "lint: not wired yet — golangci-lint arrives with task 0.6; use 'make vet' meanwhile"
 	@exit 1
