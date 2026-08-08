@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hprotzek/einkaufsliste/internal/store"
 	httptransport "github.com/hprotzek/einkaufsliste/internal/transport/http"
 )
 
@@ -28,20 +29,34 @@ const (
 	// enough for any request this service makes, short enough that a container
 	// restart is not a wait.
 	shutdownTimeout = 10 * time.Second
+
+	// startupTimeout bounds connecting to Postgres and applying migrations.
+	// Generous, because a migration is allowed to take a while; bounded, so a
+	// wedged database surfaces as a failed start rather than a silent hang.
+	startupTimeout = 2 * time.Minute
 )
 
 // config is everything the process reads from its environment. It stays in
 // main deliberately — no config library, and internal/ never reads env vars.
 type config struct {
-	addr     string
-	logLevel slog.Level
+	addr        string
+	logLevel    slog.Level
+	databaseURL string
 }
 
-func loadConfig() config {
-	return config{
-		addr:     envOr("ADDR", defaultAddr),
-		logLevel: parseLevel(os.Getenv("LOG_LEVEL")),
+func loadConfig() (config, error) {
+	// Required, with no fallback. A default pointing at localhost would let a
+	// misconfigured deploy start up and quietly serve the wrong database.
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		return config{}, errors.New("DATABASE_URL is required")
 	}
+
+	return config{
+		addr:        envOr("ADDR", defaultAddr),
+		logLevel:    parseLevel(os.Getenv("LOG_LEVEL")),
+		databaseURL: databaseURL,
+	}, nil
 }
 
 func envOr(key, fallback string) string {
@@ -67,7 +82,13 @@ func parseLevel(s string) slog.Level {
 }
 
 func main() {
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		// The logger is not built yet, and its level comes from the config we
+		// just failed to read.
+		slog.Error("invalid configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
 	slog.SetDefault(log)
@@ -79,6 +100,21 @@ func main() {
 }
 
 func run(cfg config, log *slog.Logger) error {
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
+
+	pool, err := store.NewPool(startupCtx, cfg.databaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	// Before the listener opens, so the process never serves traffic against a
+	// schema it has not migrated (spec §12.3).
+	if err := store.Migrate(startupCtx, pool, log); err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           httptransport.NewRouter(log),

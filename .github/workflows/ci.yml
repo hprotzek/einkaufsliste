@@ -49,6 +49,35 @@ jobs:
           # Same version file `make lint` reads, so CI and local cannot drift.
           version-file: .golangci-lint-version
 
+  generate:
+    name: sqlc drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned sqlc version
+        id: sqlc
+        run: echo "version=$(cat .sqlc-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up sqlc
+        uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5.0.0
+        with:
+          sqlc-version: ${{ steps.sqlc.outputs.version }}
+
+      # Catches a query or migration edited without regenerating. The same
+      # check guards openapi.yaml once task 0.9 lands.
+      - name: Regenerate and check for drift
+        run: |
+          sqlc generate
+          if ! git diff --exit-code; then
+            echo "::error::Generated code is out of date. Run 'make generate' and commit the result."
+            exit 1
+          fi
+
   test:
     name: go test -race
     runs-on: ubuntu-latest

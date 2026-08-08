@@ -1,0 +1,17 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    # The migrations are the schema. There is no second schema file to drift
+    # from them (non-negotiable 3).
+    schema: "migrations"
+    queries: "internal/store/queries"
+    gen:
+      go:
+        package: "store"
+        out: "internal/store"
+        # Use the pgx native interface, not database/sql (spec §5.2).
+        sql_package: "pgx/v5"
+        # Distinguish "no rows" from a zero value — the sync protocol cares.
+        emit_pointers_for_null_types: true
+        # An empty result set should marshal as [] rather than null.
+        emit_empty_slices: true
