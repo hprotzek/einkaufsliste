@@ -76,6 +76,31 @@ jobs:
       - name: Boot the stack
         run: make up
 
+      # Task 0.7 budgets the image at under 20 MB. Checked here rather than in
+      # release.yml because a regression should block the PR that causes it,
+      # not surface after merge. Reuses the image `make up` just built.
+      - name: Image budget
+        run: |
+          bytes=$(docker image inspect einkaufsliste-api --format '{{.Size}}')
+          budget=$((20 * 1024 * 1024))
+          printf 'image size: %s bytes (%s MiB), budget %s MiB\n' \
+            "$bytes" "$((bytes / 1024 / 1024))" "$((budget / 1024 / 1024))"
+          if [ "$bytes" -ge "$budget" ]; then
+            echo "::error::image is $((bytes / 1024 / 1024)) MiB, over the 20 MiB budget"
+            exit 1
+          fi
+
+      # A scratch image has no shell. Asserting that keeps someone from
+      # quietly swapping in alpine to make debugging easier — which would also
+      # hand an attacker a shell and break the self-probe rationale.
+      - name: Assert the runtime image is really scratch
+        run: |
+          if docker run --rm --entrypoint /bin/sh einkaufsliste-api -c true 2>/dev/null; then
+            echo "::error::the runtime image has a shell, so it is no longer FROM scratch"
+            exit 1
+          fi
+          echo "no shell in the runtime image, as intended"
+
       - name: Probe /healthz through Caddy
         run: |
           curl --fail --silent --show-error \
