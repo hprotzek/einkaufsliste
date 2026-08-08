@@ -5,6 +5,9 @@
 *.test
 *.out
 
+# Node
+node_modules/
+
 # Local environment
 .env
 .env.local

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/hprotzek/einkaufsliste/internal/transport/http/openapi"
 )
 
 func testLogger() *slog.Logger {
@@ -30,13 +32,29 @@ func TestHealthzReturnsOK(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", got, want)
 	}
 
-	var body healthResponse
+	// The generated type, so a schema change that renames or retypes this
+	// field fails here rather than in a client months later.
+	var body openapi.Health
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decoding body: %v", err)
 	}
 
-	if body.Status != "ok" {
-		t.Errorf("status field = %q, want %q", body.Status, "ok")
+	if body.Status != openapi.Ok {
+		t.Errorf("status field = %q, want %q", body.Status, openapi.Ok)
+	}
+}
+
+// /me is in the contract but has no handler until M1. It must be routed and
+// answer 501 — proof that the router really is built from openapi.yaml, not
+// from a hand-maintained list of paths.
+func TestMeIsRoutedButNotImplemented(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(testLogger()).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
 	}
 }
 

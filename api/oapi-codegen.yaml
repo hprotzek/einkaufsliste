@@ -1,0 +1,11 @@
+# Run from the repository root: oapi-codegen -config api/oapi-codegen.yaml api/openapi.yaml
+package: openapi
+output: internal/transport/http/openapi/openapi.gen.go
+generate:
+  # The chi router is built from the spec, so adding a path to openapi.yaml
+  # without writing its handler is a compile error rather than a silent gap.
+  chi-server: true
+  models: true
+output-options:
+  # Keeps unused schemas (Problem is referenced only by responses today).
+  skip-prune: true
