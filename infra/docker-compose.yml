@@ -51,10 +51,14 @@ services:
       # nothing is exposed on the host at all (§12.3).
       - "${HTTP_PORT:-8080}:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The ,z is for SELinux hosts (Fedora, RHEL, CentOS), where an unlabelled
+      # bind mount is silently unreadable inside the container and Caddy just
+      # 403s. Docker and non-SELinux hosts ignore the option, so it is safe
+      # everywhere and saves an afternoon on the ones that need it.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
       # The built web app, read-only. Run `make web` first — an unbuilt app
       # mounts as an empty directory and Caddy answers 404.
-      - ../web/dist:/srv:ro
+      - ../web/dist:/srv:ro,z
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

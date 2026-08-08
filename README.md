@@ -62,6 +62,35 @@ make down
 Skipping `make web` is not fatal — the stack still starts and the API answers,
 but Caddy has nothing to serve and `/` returns 404.
 
+### Podman
+
+`infra/setup-podman.sh` installs Podman, configures it for rootless use and
+brings the stack up in one go. It is idempotent, so re-running it is safe.
+
+```bash
+./infra/setup-podman.sh              # install, build from source, start
+./infra/setup-podman.sh --pull       # run the published GHCR image instead
+./infra/setup-podman.sh --no-install # already have podman; just configure and start
+./infra/setup-podman.sh --help
+```
+
+It handles the things that otherwise cost an evening: rootless `subuid`/`subgid`
+ranges, without which the API's `USER 65534` cannot start; lingering, so
+containers survive logging out of a headless box; and picking whichever compose
+provider you have. On SELinux hosts the bind mounts are already labelled `,z` in
+the compose file.
+
+On **Ubuntu** it also installs `uidmap`, `slirp4netns` and `fuse-overlayfs`,
+which are packaged separately from `podman` and are only `Recommends`. Rootless
+Podman does not work without `uidmap`, and the error names a missing binary
+rather than a missing package. Ubuntu 24.04 has everything it needs; on 22.04
+the script still works but warns, because Podman 3.4 predates the built-in
+`podman compose` and is old enough to be awkward.
+
+Rootless is the default because a household shopping list has no business
+running containers as root, and rootless Podman needs no daemon at all —
+the containers are ordinary child processes of your user.
+
 Postgres and the API publish no host ports; only Caddy does. In production even
 that is reached over the container network by `cloudflared`, so nothing is
 exposed on the host and no router port is opened.
