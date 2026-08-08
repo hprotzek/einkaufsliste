@@ -28,7 +28,7 @@ GOOSE := go run github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION) -dir migr
 # root, so every invocation has to say so.
 COMPOSE := docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: help build run test vet lint tidy clean migrate migrate-status migrate-create generate up down logs ps
+.PHONY: help build run test vet lint tidy clean migrate migrate-status migrate-create generate web web-dev web-typecheck up down logs ps
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -59,6 +59,20 @@ lint: ## Run golangci-lint (version from .golangci-lint-version)
 		exit 1; \
 	}
 	golangci-lint run
+
+## --- Web --------------------------------------------------------------------
+
+web: ## Build the web app into web/dist, which Caddy serves
+	@test -d web/node_modules || npm --prefix web ci
+	npm --prefix web run build
+
+web-dev: ## Vite dev server, proxying /api and /healthz to a local API
+	@test -d web/node_modules || npm --prefix web ci
+	npm --prefix web run dev
+
+web-typecheck: ## Typecheck the web app
+	@test -d web/node_modules || npm --prefix web ci
+	npm --prefix web run typecheck
 
 ## --- Stack ------------------------------------------------------------------
 

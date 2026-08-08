@@ -42,6 +42,10 @@ step.
 | `make migrate-status` | Show which migrations are applied |
 | `make migrate-create NAME=x` | Scaffold a new migration |
 | `make generate` | Regenerate sqlc queries and both sides of `api/openapi.yaml` |
+| `make web` | Build the web app into `web/dist` |
+| `make web-dev` | Vite dev server, proxying the API so dev is same-origin too |
+| `make web-typecheck` | Typecheck the web app |
+| `make up` / `make down` | Start / stop the compose stack |
 
 `make help` lists them all.
 
@@ -49,10 +53,14 @@ step.
 
 ```bash
 cp .env.example .env          # then set POSTGRES_PASSWORD
+make web                      # build the app Caddy serves
 make up                       # postgres + api + caddy, waits for healthy
-curl localhost:8080/healthz
+open http://localhost:8080    # the app, with the API on the same origin
 make down
 ```
+
+Skipping `make web` is not fatal — the stack still starts and the API answers,
+but Caddy has nothing to serve and `/` returns 404.
 
 Postgres and the API publish no host ports; only Caddy does. In production even
 that is reached over the container network by `cloudflared`, so nothing is
