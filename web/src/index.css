@@ -1,0 +1,47 @@
+/* Deliberately minimal. The real design work lands with M4's UI; anything
+   more here would only be thrown away. Dark mode is honoured from the start
+   because retrofitting a colour system is worse than starting with one. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5c5c5c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #ececec;
+    --muted: #9a9a9a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  /* Respect the notch; this is a phone-first app. */
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+
+main {
+  max-width: 40rem;
+  margin-inline: auto;
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+p {
+  color: var(--muted);
+}

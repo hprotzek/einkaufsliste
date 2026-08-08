@@ -49,6 +49,38 @@ jobs:
           # Same version file `make lint` reads, so CI and local cannot drift.
           version-file: .golangci-lint-version
 
+  web:
+    name: web typecheck + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      # §11.5 names frontend typecheck as its own gate. It is what makes the
+      # generated API types load-bearing: a contract change that the app has
+      # not caught up with fails here.
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
   stack:
     name: compose stack
     runs-on: ubuntu-latest
@@ -58,6 +90,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Caddy serves web/dist, so the app has to exist before the stack boots.
+      - name: Build the web app
+        run: make web
 
       # Derived from .env.example rather than written from scratch, so a
       # variable the stack needs but the example forgets fails here instead of
@@ -106,6 +149,28 @@ jobs:
           curl --fail --silent --show-error \
                --retry 5 --retry-delay 2 --retry-connrefused \
                http://localhost:8080/healthz
+
+      # Task 0.10's done-when: the app is served by Caddy at the same origin
+      # as the API. Both of the previous two steps hitting the same host and
+      # port is what "same origin" means here, and is why there is no CORS.
+      - name: Serve the web app from the same origin
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error http://localhost:8080/ > index.html
+          grep -q '<div id="root">' index.html \
+            || { echo "::error::Caddy did not serve the built app"; cat index.html; exit 1; }
+          grep -qE '<script[^>]+src="/assets/' index.html \
+            || { echo "::error::served HTML references no built asset bundle"; cat index.html; exit 1; }
+
+      # A deep link must reach the app rather than 404, or client-side routing
+      # breaks the moment anyone reloads a page that is not /.
+      - name: Deep link falls through to the app
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --output deep.html --write-out '%{http_code}' http://localhost:8080/some/deep/route)
+          test "$code" = "200" || { echo "::error::deep link returned $code, expected 200"; exit 1; }
+          grep -q '<div id="root">' deep.html \
+            || { echo "::error::deep link did not fall through to index.html"; exit 1; }
 
       # Capture first, then grep. Piping compose straight into grep reports
       # "never migrated" when compose itself failed, which is a check that

@@ -52,6 +52,9 @@ services:
       - "${HTTP_PORT:-8080}:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The built web app, read-only. Run `make web` first — an unbuilt app
+      # mounts as an empty directory and Caddy answers 404.
+      - ../web/dist:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
