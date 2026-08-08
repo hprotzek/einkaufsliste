@@ -1,0 +1,149 @@
+# The contract of record (non-negotiable 4). Change this file first, run
+# `make generate`, then write code. CI fails if the generated Go or TypeScript
+# does not match what this file produces.
+#
+# 3.0.3 rather than 3.1: oapi-codegen's 3.1 support is still partial, and
+# nothing here needs 3.1's type arrays or JSON Schema alignment.
+openapi: 3.0.3
+
+info:
+  title: Einkaufsliste API
+  version: 1.0.0
+  description: |
+    Shared shopping list for one household.
+
+    Everything under /api/v1 requires a bearer access token (spec §9). Health
+    endpoints sit outside that prefix because the uptime ping hits them
+    directly (§12.6).
+
+    Errors are RFC 9457 problem+json (§8).
+
+servers:
+  # Caddy serves the web app and proxies the API on the same origin, so paths
+  # are absolute from the root and there is no CORS (§5.1).
+  - url: /
+
+# Applies to every operation; /healthz opts out explicitly.
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      description: |
+        Reports that the process is running. Deliberately checks no
+        dependencies: a database blip must not turn into a restart loop.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/v1/me:
+    get:
+      operationId: getMe
+      summary: The signed-in user
+      description: |
+        Returns the authenticated user's profile. Only the fields listed in
+        spec §4 are stored: subject, email, display name and avatar URL.
+      tags: [users]
+      responses:
+        "200":
+          description: The signed-in user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An access token issued by this server, never a provider token (§9).
+        It is held in memory by the client; the refresh token lives in an
+        HttpOnly cookie (non-negotiable 6).
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Always "ok" — a failing process does not answer at all.
+      example:
+        status: ok
+
+    User:
+      type: object
+      required: [id, display_name, email, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        email:
+          type: string
+          format: email
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+          description: |
+            The provider's avatar URL, hotlinked. Null when the provider
+            supplied none. Whether these need re-hosting is open (§14b, 5).
+        created_at:
+          type: string
+          format: date-time
+          description: UTC, as is everything on the wire (§4).
+
+    Problem:
+      type: object
+      description: RFC 9457 problem detail.
+      required: [title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
+
+  responses:
+    Unauthorized:
+      description: The access token is missing, expired or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    NotImplemented:
+      description: |
+        The endpoint is part of the contract but not yet built. Removed once
+        M1 lands authentication.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

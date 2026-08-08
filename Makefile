@@ -5,6 +5,7 @@ BINARY := bin/api
 GOLANGCI_LINT_VERSION := $(shell cat .golangci-lint-version)
 GOOSE_VERSION := $(shell cat .goose-version)
 SQLC_VERSION := $(shell cat .sqlc-version)
+OAPI_CODEGEN_VERSION := $(shell cat .oapi-codegen-version)
 
 # Local development default. The binary itself requires DATABASE_URL with no
 # fallback — a default pointing at localhost would let a misconfigured deploy
@@ -63,13 +64,17 @@ migrate-create: ## Create a migration: make migrate-create NAME=add_users
 
 ## --- Codegen ----------------------------------------------------------------
 
-generate: ## Regenerate sqlc code (oapi-codegen joins this target at task 0.9)
+generate: ## Regenerate sqlc queries and both sides of openapi.yaml
 	@command -v sqlc >/dev/null 2>&1 || { \
 		echo "sqlc not found. Install the pinned version with:"; \
 		echo "  go install github.com/sqlc-dev/sqlc/cmd/sqlc@v$(SQLC_VERSION)"; \
 		exit 1; \
 	}
 	sqlc generate
+	go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) \
+		-config api/oapi-codegen.yaml api/openapi.yaml
+	@test -d web/node_modules || npm --prefix web ci
+	npm --prefix web run generate
 
 tidy: ## Sync go.mod and go.sum
 	go mod tidy

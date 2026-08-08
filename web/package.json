@@ -1,0 +1,11 @@
+{
+  "name": "einkaufsliste-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "openapi-typescript ../api/openapi.yaml --output src/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0"
+  }
+}

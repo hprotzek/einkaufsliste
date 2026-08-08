@@ -50,7 +50,7 @@ jobs:
           version-file: .golangci-lint-version
 
   generate:
-    name: sqlc drift
+    name: codegen drift
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -58,6 +58,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Read pinned sqlc version
         id: sqlc
@@ -68,11 +80,22 @@ jobs:
         with:
           sqlc-version: ${{ steps.sqlc.outputs.version }}
 
-      # Catches a query or migration edited without regenerating. The same
-      # check guards openapi.yaml once task 0.9 lands.
-      - name: Regenerate and check for drift
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      # Catches a query, migration or openapi.yaml edited without
+      # regenerating. openapi.yaml is the contract of record, so both sides
+      # are regenerated here and compared (non-negotiable 4).
+      - name: Regenerate everything
         run: |
           sqlc generate
+          go run "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(cat .oapi-codegen-version)" \
+            -config api/oapi-codegen.yaml api/openapi.yaml
+          npm --prefix web run generate
+
+      - name: Check for drift
+        run: |
           if ! git diff --exit-code; then
             echo "::error::Generated code is out of date. Run 'make generate' and commit the result."
             exit 1
