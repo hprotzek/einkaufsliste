@@ -1,0 +1,100 @@
+name: CI
+
+# Plain `pull_request`, never `pull_request_target`. This is a public repo, and
+# pull_request_target runs untrusted fork code with a write-scoped token and
+# repository secrets in context (spec §12.4).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only by default. Widen per job, never here (spec §12.4).
+permissions:
+  contents: read
+
+# A new push to a PR makes the previous run irrelevant. main is excluded from
+# cancellation so every commit that lands keeps a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    name: vet + golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes; leaving the token in .git/config would only
+          # widen what a compromised step could reach.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # go.mod is the single source of truth for the Go version.
+          go-version-file: go.mod
+
+      # golangci-lint runs govet too, but §11.5 names `go vet` as its own gate
+      # and it costs seconds. Keeping it separate also means a govet failure is
+      # legible without reading linter output.
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
+        with:
+          # Same version file `make lint` reads, so CI and local cannot drift.
+          version-file: .golangci-lint-version
+
+  test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Postgres only. Redis was removed from the architecture in spec §5.2,
+    # which reverses decision 3 — there is no second service here by design.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: einkaufsliste_test
+        ports:
+          - 5432:5432
+        # The job starts before the container accepts connections without this.
+        options: >-
+          --health-cmd="pg_isready -U postgres -d einkaufsliste_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      # Throwaway per-run credentials for a container reachable only from this
+      # job. Not a secret, and deliberately not stored as one.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/einkaufsliste_test?sslmode=disable
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # No Go code touches the database yet (tasks 0.4 and 0.5 add it). This
+      # step exists so the service container is proven working now, rather
+      # than being discovered broken later underneath a real test failure.
+      - name: Verify the Postgres service is reachable
+        run: |
+          pg_isready --host=localhost --port=5432 --username=postgres
+          psql "$DATABASE_URL" --no-psqlrc --quiet --command='SELECT version();'
+
+      - name: go test -race
+        run: go test -race ./...

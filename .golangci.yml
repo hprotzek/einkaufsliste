@@ -1,0 +1,71 @@
+# golangci-lint configuration. The linter version is pinned in
+# .golangci-lint-version, which both CI and `make lint` read, so local and CI
+# runs cannot drift.
+version: "2"
+
+run:
+  timeout: 5m
+  # Build tags used by integration suites, so their files are linted too rather
+  # than silently skipped.
+  build-tags:
+    - integration
+
+linters:
+  # The standard set is errcheck, govet, ineffassign, staticcheck and unused.
+  default: standard
+  enable:
+    # Resource leaks — the OIDC and WebSocket paths (M1, M5) are where these bite.
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+    # Error handling correctness.
+    - errorlint
+    - nilerr
+    # Correctness odds and ends.
+    - durationcheck
+    - copyloopvar
+    - unconvert
+    # Security. This is a public repo serving auth over the internet (spec §4).
+    - gosec
+    # Style, kept light.
+    - misspell
+    - revive
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        # Field alignment is a memory micro-optimisation. At ~10 users (spec §4)
+        # it buys nothing and fights readable struct ordering.
+        - fieldalignment
+    misspell:
+      locale: UK
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files: unchecked errors and hardcoded credentials are normal and
+      # the noise would drown real findings.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hprotzek/einkaufsliste
