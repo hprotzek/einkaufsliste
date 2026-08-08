@@ -45,6 +45,36 @@ step.
 
 `make help` lists them all.
 
+## The whole stack
+
+```bash
+cp .env.example .env          # then set POSTGRES_PASSWORD
+make up                       # postgres + api + caddy, waits for healthy
+curl localhost:8080/healthz
+make down
+```
+
+Postgres and the API publish no host ports; only Caddy does. In production even
+that is reached over the container network by `cloudflared`, so nothing is
+exposed on the host and no router port is opened.
+
+## Container images
+
+Every merge to `main` publishes a multi-architecture image to GHCR:
+
+```
+ghcr.io/hprotzek/einkaufsliste-api:latest
+ghcr.io/hprotzek/einkaufsliste-api:sha-<commit>
+```
+
+`linux/amd64` and `linux/arm64`, so it runs on a normal server or a Pi. The
+runtime image is `FROM scratch` — the binary and CA certificates, nothing else,
+about 11 MiB, with CI failing the build if it ever exceeds 20 MiB.
+
+Deployment is pull-based: the server runs a timer that pulls `:latest` and
+restarts. Nothing pushes into the home network, so there is no SSH key in this
+public repository and no inbound path to open.
+
 ## How this repository is put together
 
 - **`api/openapi.yaml` is the contract of record.** The chi router is built
