@@ -7,6 +7,12 @@ GOOSE_VERSION := $(shell cat .goose-version)
 SQLC_VERSION := $(shell cat .sqlc-version)
 OAPI_CODEGEN_VERSION := $(shell cat .oapi-codegen-version)
 
+# Load .env when present, so the documented `cp .env.example .env` workflow
+# actually reaches the recipes. Plain KEY=value only — this is make syntax,
+# not a shell. An explicit `make DATABASE_URL=... run` still wins.
+-include .env
+export
+
 # Local development default. The binary itself requires DATABASE_URL with no
 # fallback — a default pointing at localhost would let a misconfigured deploy
 # start against the wrong database.
