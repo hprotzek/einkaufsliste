@@ -1,0 +1,15 @@
+# Build output
+/bin/
+
+# Go test and coverage artefacts
+*.test
+*.out
+
+# Local environment
+.env
+.env.local
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
