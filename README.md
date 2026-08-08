@@ -80,6 +80,13 @@ containers survive logging out of a headless box; and picking whichever compose
 provider you have. On SELinux hosts the bind mounts are already labelled `,z` in
 the compose file.
 
+On **Ubuntu** it also installs `uidmap`, `slirp4netns` and `fuse-overlayfs`,
+which are packaged separately from `podman` and are only `Recommends`. Rootless
+Podman does not work without `uidmap`, and the error names a missing binary
+rather than a missing package. Ubuntu 24.04 has everything it needs; on 22.04
+the script still works but warns, because Podman 3.4 predates the built-in
+`podman compose` and is old enough to be awkward.
+
 Rootless is the default because a household shopping list has no business
 running containers as root, and rootless Podman needs no daemon at all —
 the containers are ordinary child processes of your user.

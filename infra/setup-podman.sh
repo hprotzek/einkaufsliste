@@ -142,11 +142,18 @@ install_podman() {
       ;;
     apt)
       as_root apt-get update
-      # podman-compose is packaged on Debian 12+ and Ubuntu 22.04+. Where it
-      # is missing, podman alone still leaves us the docker-compose path.
-      as_root apt-get install -y podman || die "could not install podman"
+      # uidmap is the one that matters: it carries newuidmap/newgidmap, and
+      # Ubuntu packages it separately from podman. Without it rootless Podman
+      # fails immediately, and the error names a binary rather than a package.
+      # slirp4netns and fuse-overlayfs are likewise only Recommends, so an
+      # install with --no-install-recommends leaves rootless networking and
+      # storage broken.
+      as_root apt-get install -y podman uidmap slirp4netns fuse-overlayfs \
+        || die "could not install podman and its rootless helpers"
+      # podman-compose is in universe on Ubuntu 22.04+ and Debian 12+. If the
+      # component is disabled, podman alone still leaves the docker-compose path.
       as_root apt-get install -y podman-compose \
-        || warn "podman-compose not packaged here; will look for another compose provider"
+        || warn "podman-compose not available (is the 'universe' component enabled?); will look for another compose provider"
       ;;
     pacman)
       as_root pacman -Sy --needed --noconfirm podman podman-compose
@@ -188,8 +195,8 @@ configure_rootless() {
   else
     warn "no subuid/subgid range for ${user}; the API container will fail to start as UID 65534."
     info "granting one now"
-    as_root usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$user" \
-      || die "could not add subuid/subgid ranges. Add them manually to /etc/subuid and /etc/subgid."
+    grant_subid_range "$user"
+    # Tells Podman to rebuild its rootless state against the new range.
     podman system migrate >/dev/null 2>&1 || true
   fi
 
@@ -214,8 +221,78 @@ configure_rootless() {
   fi
 }
 
+# Pick a start that cannot overlap an existing allocation. Hardcoding 100000
+# collides on any machine where another user already holds that block.
+next_free_subid() {
+  local highest=0 file
+  for file in /etc/subuid /etc/subgid; do
+    if [ -s "$file" ]; then
+      local end
+      end="$(awk -F: '{ e = $2 + $3; if (e > m) m = e } END { print m + 0 }' "$file")"
+      [ "$end" -gt "$highest" ] && highest="$end"
+    fi
+  done
+  if [ "$highest" -lt 100000 ]; then
+    printf '100000\n'
+  else
+    printf '%s\n' "$highest"
+  fi
+}
+
+grant_subid_range() {
+  local user="$1" start
+  start="$(next_free_subid)"
+
+  # shadow 4.9 added --add-subuids. Ubuntu 22.04 ships 4.8.1, which has not
+  # got it, so fall back to writing the files directly.
+  if usermod --help 2>&1 | grep -q -- '--add-subuids'; then
+    as_root usermod \
+      --add-subuids "${start}-$((start + 65535))" \
+      --add-subgids "${start}-$((start + 65535))" \
+      "$user" \
+      || die "could not add subuid/subgid ranges for ${user}."
+  else
+    info "usermod has no --add-subuids (shadow < 4.9); writing /etc/subuid and /etc/subgid directly"
+    # The single quotes are the point: $1 and $2 are the inner shell's
+    # positional parameters, passed as arguments rather than interpolated, so
+    # nothing in the values can be re-parsed as shell.
+    # shellcheck disable=SC2016
+    as_root sh -c 'printf "%s:%s:65536\n" "$1" "$2" >> /etc/subuid' _ "$user" "$start" \
+      || die "could not write /etc/subuid"
+    # shellcheck disable=SC2016
+    as_root sh -c 'printf "%s:%s:65536\n" "$1" "$2" >> /etc/subgid' _ "$user" "$start" \
+      || die "could not write /etc/subgid"
+  fi
+
+  info "granted ${user} the range ${start}-$((start + 65535))"
+}
+
+# True when $1 is an older version than $2.
+version_lt() {
+  [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+}
+
+check_podman_version() {
+  local version
+  version="$(podman --version 2>/dev/null | awk '{print $3}')"
+  [ -n "$version" ] || return 0
+
+  info "podman ${version}"
+
+  # `podman compose` arrived in 4.4. Older Podman still works through
+  # podman-compose, which the provider detection below will find.
+  if version_lt "$version" "4.4.0"; then
+    warn "podman ${version} predates the built-in 'podman compose' subcommand."
+    warn "podman-compose will be used instead. If the stack misbehaves, a newer"
+    warn "Podman from the upstream repository is the usual fix — Ubuntu 22.04"
+    warn "ships 3.4, which is old enough to be awkward."
+  fi
+}
+
 detect_compose() {
   log "Selecting a compose provider"
+
+  check_podman_version
 
   if podman compose version >/dev/null 2>&1; then
     compose_cmd=(podman compose)
@@ -375,9 +452,11 @@ summary() {
       ${compose_cmd[*]} --env-file .env -f infra/docker-compose.yml logs -f
       ${compose_cmd[*]} --env-file .env -f infra/docker-compose.yml down
 
-    Postgres is not published to the host. Reach it with:
+    Postgres is not published to the host. Reach it by service name, since
+    compose providers do not agree on generated container names:
 
-      podman exec -it einkaufsliste-postgres-1 psql -U einkaufsliste
+      ${compose_cmd[*]} --env-file .env -f infra/docker-compose.yml \\
+        exec postgres psql -U einkaufsliste
 
     Next, when you set up the tunnel: point cloudflared at
     localhost:${http_port}. Nothing else needs to be exposed, and no router
