@@ -1,0 +1,65 @@
+# Three containers, no Redis (spec §5.2 reverses decision 3). cloudflared
+# joins them at task 0.8; it is the only thing that needs to reach the outside
+# world, and it does so outbound-only.
+#
+# Run it with `make up`, which passes the repository-root .env — compose
+# otherwise looks for .env next to this file.
+name: einkaufsliste
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-einkaufsliste}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copy .env.example to .env}
+      POSTGRES_DB: ${POSTGRES_DB:-einkaufsliste}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ escapes compose interpolation so the shell inside the container
+      # expands these, not compose.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-einkaufsliste} -d $${POSTGRES_DB:-einkaufsliste}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    # No published port on purpose. Nothing outside this network needs
+    # Postgres; reach it with `docker compose exec postgres psql`.
+
+  api:
+    build:
+      # The build needs the whole module, so the context is the repository
+      # root rather than infra/.
+      context: ..
+      dockerfile: infra/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-einkaufsliste}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-einkaufsliste}?sslmode=disable
+      ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    # Health comes from the image's HEALTHCHECK, which runs the binary in
+    # probe mode — a scratch image has no shell to run anything else.
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      # Only Caddy is published. In production the tunnel connects here and
+      # nothing is exposed on the host at all (§12.3).
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

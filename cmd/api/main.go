@@ -82,6 +82,12 @@ func parseLevel(s string) slog.Level {
 }
 
 func main() {
+	// Probe mode, before any config is read: the health probe needs neither a
+	// database nor a logger, and must not fail because one is misconfigured.
+	if len(os.Args) > 1 && os.Args[1] == healthcheckArg {
+		os.Exit(runHealthcheck())
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		// The logger is not built yet, and its level comes from the config we

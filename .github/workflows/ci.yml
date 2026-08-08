@@ -49,6 +49,51 @@ jobs:
           # Same version file `make lint` reads, so CI and local cannot drift.
           version-file: .golangci-lint-version
 
+  stack:
+    name: compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Throwaway credentials for a stack that exists for ninety seconds on a
+      # disposable runner. Not a secret, and deliberately not stored as one.
+      - name: Write .env
+        run: printf 'POSTGRES_PASSWORD=ci-not-a-secret\n' > .env
+
+      # --wait blocks until every container reports healthy, so this asserts
+      # the stack's health rather than merely that compose accepted the file.
+      # Postgres answers pg_isready and the API answers its own probe, which
+      # only passes once migrations have applied and the listener is open.
+      - name: Boot the stack
+        run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
+
+      - name: Probe /healthz through Caddy
+        run: |
+          curl --fail --silent --show-error \
+               --retry 5 --retry-delay 2 --retry-connrefused \
+               http://localhost:8080/healthz
+
+      - name: Confirm migrations ran inside the container
+        run: |
+          docker compose -f infra/docker-compose.yml logs api | grep -q '"msg":"schema up to date"' \
+            || { echo "::error::API never reported the schema as migrated"; exit 1; }
+
+      - name: Container status
+        if: always()
+        run: docker compose -f infra/docker-compose.yml ps
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v
+
   generate:
     name: codegen drift
     runs-on: ubuntu-latest
