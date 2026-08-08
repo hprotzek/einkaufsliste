@@ -59,17 +59,22 @@ jobs:
         with:
           persist-credentials: false
 
-      # Throwaway credentials for a stack that exists for ninety seconds on a
-      # disposable runner. Not a secret, and deliberately not stored as one.
+      # Derived from .env.example rather than written from scratch, so a
+      # variable the stack needs but the example forgets fails here instead of
+      # on somebody's first clone. The password is throwaway: this stack lives
+      # for ninety seconds on a disposable runner.
       - name: Write .env
-        run: printf 'POSTGRES_PASSWORD=ci-not-a-secret\n' > .env
+        run: |
+          cp .env.example .env
+          sed -i 's|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=ci-not-a-secret|' .env
 
-      # --wait blocks until every container reports healthy, so this asserts
-      # the stack's health rather than merely that compose accepted the file.
-      # Postgres answers pg_isready and the API answers its own probe, which
-      # only passes once migrations have applied and the listener is open.
+      # `make up` rather than a hand-written compose line, so CI exercises the
+      # command the README documents. It passes --wait, so every container must
+      # report healthy, not merely started: Postgres answers pg_isready and the
+      # API answers its own probe, which only succeeds once migrations have
+      # applied and the listener is open.
       - name: Boot the stack
-        run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
+        run: make up
 
       - name: Probe /healthz through Caddy
         run: |
@@ -77,22 +82,30 @@ jobs:
                --retry 5 --retry-delay 2 --retry-connrefused \
                http://localhost:8080/healthz
 
+      # Capture first, then grep. Piping compose straight into grep reports
+      # "never migrated" when compose itself failed, which is a check that
+      # lies about the thing it is checking.
       - name: Confirm migrations ran inside the container
         run: |
-          docker compose -f infra/docker-compose.yml logs api | grep -q '"msg":"schema up to date"' \
-            || { echo "::error::API never reported the schema as migrated"; exit 1; }
+          set -euo pipefail
+          docker compose --env-file .env -f infra/docker-compose.yml logs api > api.log
+          grep -q '"msg":"schema up to date"' api.log || {
+            echo "::error::API never reported the schema as migrated"
+            cat api.log
+            exit 1
+          }
 
       - name: Container status
         if: always()
-        run: docker compose -f infra/docker-compose.yml ps
+        run: make ps
 
       - name: Logs on failure
         if: failure()
-        run: docker compose -f infra/docker-compose.yml logs
+        run: docker compose --env-file .env -f infra/docker-compose.yml logs
 
       - name: Tear down
         if: always()
-        run: docker compose -f infra/docker-compose.yml down -v
+        run: make down
 
   generate:
     name: codegen drift
