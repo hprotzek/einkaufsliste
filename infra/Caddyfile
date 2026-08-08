@@ -1,0 +1,40 @@
+{
+	# No admin API inside the container — nothing needs it, and it is a
+	# control plane sitting on the same network as the app.
+	admin off
+
+	# TLS terminates at Cloudflare's edge and the tunnel speaks plain HTTP to
+	# us (spec §12.3), so there is no certificate to obtain here. Leaving this
+	# on would make Caddy try to solve ACME challenges it cannot reach.
+	auto_https off
+}
+
+:80 {
+	encode gzip
+
+	# The API and the app share an origin, which is what removes CORS from the
+	# design entirely (§5.1).
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# Health endpoints sit outside /api/v1 because the uptime ping targets
+	# them directly (§12.6, task 0.8).
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+
+	# Everything else is the web app, served as static files. The build output
+	# is not mounted until task 0.10 builds it, so until then this answers 404
+	# — which is correct: there is no app yet.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

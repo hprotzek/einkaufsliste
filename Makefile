@@ -7,6 +7,12 @@ GOOSE_VERSION := $(shell cat .goose-version)
 SQLC_VERSION := $(shell cat .sqlc-version)
 OAPI_CODEGEN_VERSION := $(shell cat .oapi-codegen-version)
 
+# Load .env when present, so the documented `cp .env.example .env` workflow
+# actually reaches the recipes. Plain KEY=value only — this is make syntax,
+# not a shell. An explicit `make DATABASE_URL=... run` still wins.
+-include .env
+export
+
 # Local development default. The binary itself requires DATABASE_URL with no
 # fallback — a default pointing at localhost would let a misconfigured deploy
 # start against the wrong database.
@@ -18,7 +24,11 @@ DATABASE_URL ?= $(DEV_DATABASE_URL)
 # is a development convenience, not a second source of truth.
 GOOSE := go run github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION) -dir migrations postgres "$(DATABASE_URL)"
 
-.PHONY: help build run test vet lint tidy clean migrate migrate-status migrate-create generate
+# Compose looks for .env beside the compose file; ours lives at the repository
+# root, so every invocation has to say so.
+COMPOSE := docker compose --env-file .env -f infra/docker-compose.yml
+
+.PHONY: help build run test vet lint tidy clean migrate migrate-status migrate-create generate up down logs ps
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +59,21 @@ lint: ## Run golangci-lint (version from .golangci-lint-version)
 		exit 1; \
 	}
 	golangci-lint run
+
+## --- Stack ------------------------------------------------------------------
+
+up: ## Build and start the stack, waiting until every container is healthy
+	@test -f .env || { echo "No .env found. Run: cp .env.example .env, then set POSTGRES_PASSWORD"; exit 1; }
+	$(COMPOSE) up -d --build --wait
+
+down: ## Stop the stack, keeping the database volume
+	$(COMPOSE) down
+
+logs: ## Follow logs from every container
+	$(COMPOSE) logs -f
+
+ps: ## Show container status and health
+	$(COMPOSE) ps
 
 ## --- Database ---------------------------------------------------------------
 
