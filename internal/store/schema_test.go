@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"github.com/hprotzek/einkaufsliste/internal/dbtest"
 	"github.com/hprotzek/einkaufsliste/internal/store"
 	"github.com/hprotzek/einkaufsliste/migrations"
 )
@@ -26,7 +27,7 @@ const (
 func migratedPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	pool, err := store.NewPool(t.Context(), newTestDB(t))
+	pool, err := store.NewPool(t.Context(), dbtest.New(t))
 	if err != nil {
 		t.Fatalf("opening pool: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestMigrationsRollBack(t *testing.T) {
 		return exists
 	}
 
-	for _, name := range []string{"users", "identities"} {
+	for _, name := range []string{"users", "identities", "refresh_tokens"} {
 		if !tableExists(name) {
 			t.Fatalf("table %s missing after migrating up", name)
 		}
@@ -240,7 +241,7 @@ func TestMigrationsRollBack(t *testing.T) {
 		t.Fatalf("rolling back: %v", err)
 	}
 
-	for _, name := range []string{"users", "identities"} {
+	for _, name := range []string{"users", "identities", "refresh_tokens"} {
 		if tableExists(name) {
 			t.Errorf("table %s survived the rollback", name)
 		}
@@ -250,7 +251,7 @@ func TestMigrationsRollBack(t *testing.T) {
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("re-applying: %v", err)
 	}
-	for _, name := range []string{"users", "identities"} {
+	for _, name := range []string{"users", "identities", "refresh_tokens"} {
 		if !tableExists(name) {
 			t.Errorf("table %s missing after re-applying", name)
 		}
