@@ -264,7 +264,7 @@ Two rules the model needs in order not to strand people:
 users
   id uuid pk
   display_name text
-  email citext unique
+  email citext                 -- unique only where email_verified (see §9)
   avatar_url text
   created_at, updated_at, deleted_at
 
@@ -912,6 +912,7 @@ iOS and Android against the same API and the same conformance suite, plus push n
 | 3 | ~~Redis from the start~~ → **no Redis** | Reversed once scale became "one household". In-process pub/sub behind a `Broadcaster` interface; idempotency keys in Postgres (§5.2) |
 | 4 | **Share-link invites only** | No email infrastructure needed at all in v1 — worth protecting, it removes a whole subsystem |
 | 5 | **No push until native apps** | v1.1 stays small; PWA relies on the WebSocket while open |
+| 5b | **`users.email` is unique only among verified addresses** | §6.2 wanted a plain unique index, but §9 requires an unverified claim on an address to create a separate account, and both cannot hold. A partial unique index makes "two verified accounts on one address" impossible in the data rather than merely prevented in code. The identity key stays `(provider, subject)` |
 | 6 | **Show "added by" avatars** | Items carry `created_by` / `checked_by`; account deletion must anonymise rather than cascade |
 
 | 7 | **Recency ranking in R1, rhythm ranking only if the data supports it** | §7.4 becomes a hypothesis to test, not a commitment |
