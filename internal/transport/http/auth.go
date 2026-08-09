@@ -150,6 +150,10 @@ func (s server) writeSession(w http.ResponseWriter, r *http.Request, session aut
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
+	// #nosec G117 -- the access token is meant to be in the body. It is
+	// short-lived, unrevocable and held in memory by the client; it is the
+	// *refresh* token that must never appear here, and it does not
+	// (non-negotiable 6).
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.log.ErrorContext(r.Context(), "writing session response", slog.Any("error", err))
 	}

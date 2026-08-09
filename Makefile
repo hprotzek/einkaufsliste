@@ -52,13 +52,20 @@ test: ## Run all tests with the race detector
 vet: ## Run go vet
 	go vet ./...
 
-lint: ## Run golangci-lint (version from .golangci-lint-version)
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo "golangci-lint not found. Install the pinned version with:"; \
-		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)"; \
-		exit 1; \
-	}
-	golangci-lint run
+lint: bin/golangci-lint ## Run golangci-lint (version from .golangci-lint-version)
+	./bin/golangci-lint run
+
+# The release binary, not `go install`. They are not equivalent: the release
+# carries a gosec build that reports rules a source build misses, so a
+# `go install`ed linter says "0 issues" on code CI then rejects. Local green
+# has to mean CI green, or the gate teaches people to ignore it.
+bin/golangci-lint:
+	@mkdir -p bin
+	@echo "downloading golangci-lint $(GOLANGCI_LINT_VERSION)"
+	@curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-linux-amd64.tar.gz" \
+		| tar -xz -C bin --strip-components=1 \
+		"golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-linux-amd64/golangci-lint"
+	@chmod +x bin/golangci-lint
 
 ## --- Web --------------------------------------------------------------------
 

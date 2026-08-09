@@ -27,6 +27,9 @@ const (
 // navigation. Lax still refuses it on cross-site POSTs, which is the case
 // that matters.
 func (s server) setRefreshCookie(w http.ResponseWriter, token auth.RefreshToken) {
+	// #nosec G124 -- HttpOnly and SameSite are set below; Secure is a variable
+	// because a local stack on plain HTTP would never receive the cookie
+	// otherwise. It defaults to true and only COOKIE_SECURE=false turns it off.
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    token.Token,
@@ -42,6 +45,8 @@ func (s server) setRefreshCookie(w http.ResponseWriter, token auth.RefreshToken)
 // clearRefreshCookie expires the cookie. Every attribute except the value
 // must match the one that set it, or the browser keeps the original.
 func (s server) clearRefreshCookie(w http.ResponseWriter) {
+	// #nosec G124 -- same attributes as setRefreshCookie, which they must
+	// match exactly or the browser keeps the original cookie.
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    "",
