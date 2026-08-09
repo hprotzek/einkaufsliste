@@ -45,6 +45,94 @@ paths:
               schema:
                 $ref: "#/components/schemas/Health"
 
+  /api/v1/auth/oidc/{provider}/callback:
+    post:
+      operationId: authCallback
+      summary: Exchange an authorisation code for a session
+      description: |
+        The client completes Authorization Code + PKCE with the provider and
+        posts the resulting code here. The server exchanges it, verifies the
+        ID token, finds or creates the account, and issues its own tokens —
+        the provider's tokens never leave this server (spec §9).
+
+        The refresh token is returned only as an HttpOnly cookie, never in
+        the body: JavaScript must not be able to read it (non-negotiable 6).
+      tags: [auth]
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: Provider name. R1 configures Google; nothing assumes it.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCallbackRequest"
+      responses:
+        "200":
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              description: The refresh token, HttpOnly, Secure, SameSite=Lax.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: authRefresh
+      summary: Exchange the refresh cookie for a new session
+      description: |
+        Reads the refresh token from its cookie and rotates it. Replaying a
+        spent token revokes the whole family and ends the session (§9); the
+        response does not say which of the two happened.
+      tags: [auth]
+      security: []
+      responses:
+        "200":
+          description: Rotated.
+          headers:
+            Set-Cookie:
+              description: The replacement refresh token.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/logout:
+    post:
+      operationId: authLogout
+      summary: End this session
+      description: |
+        Revokes the refresh token's family and clears the cookie. Succeeds
+        even when there is no session, so a client can always reach a
+        signed-out state.
+      tags: [auth]
+      security: []
+      responses:
+        "204":
+          description: Signed out.
+          headers:
+            Set-Cookie:
+              description: An expired cookie, clearing the refresh token.
+              schema:
+                type: string
+
   /api/v1/me:
     get:
       operationId: getMe
@@ -87,6 +175,41 @@ components:
           description: Always "ok" — a failing process does not answer at all.
       example:
         status: ok
+
+    AuthCallbackRequest:
+      type: object
+      required: [code, code_verifier, redirect_uri, nonce]
+      properties:
+        code:
+          type: string
+          description: The authorisation code from the provider.
+        code_verifier:
+          type: string
+          description: The PKCE verifier matching the challenge sent to the provider.
+        redirect_uri:
+          type: string
+          description: Must match the redirect URI used to obtain the code.
+        nonce:
+          type: string
+          description: |
+            The nonce the client put in the authorize request. The server
+            checks the ID token carries the same one, which is what stops an
+            ID token captured elsewhere being replayed into this session.
+
+    Session:
+      type: object
+      required: [access_token, expires_in, user]
+      properties:
+        access_token:
+          type: string
+          description: |
+            A bearer token for /api/v1. Short-lived and unrevocable, so it is
+            held in memory and never in localStorage (non-negotiable 6).
+        expires_in:
+          type: integer
+          description: Seconds until the access token expires.
+        user:
+          $ref: "#/components/schemas/User"
 
     User:
       type: object
@@ -132,6 +255,13 @@ components:
           format: uri
 
   responses:
+    BadRequest:
+      description: The request was malformed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
     Unauthorized:
       description: The access token is missing, expired or invalid.
       content:

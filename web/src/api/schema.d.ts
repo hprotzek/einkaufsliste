@@ -25,6 +25,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/oidc/{provider}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange an authorisation code for a session
+         * @description The client completes Authorization Code + PKCE with the provider and
+         *     posts the resulting code here. The server exchanges it, verifies the
+         *     ID token, finds or creates the account, and issues its own tokens —
+         *     the provider's tokens never leave this server (spec §9).
+         *
+         *     The refresh token is returned only as an HttpOnly cookie, never in
+         *     the body: JavaScript must not be able to read it (non-negotiable 6).
+         */
+        post: operations["authCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange the refresh cookie for a new session
+         * @description Reads the refresh token from its cookie and rotates it. Replaying a
+         *     spent token revokes the whole family and ends the session (§9); the
+         *     response does not say which of the two happened.
+         */
+        post: operations["authRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End this session
+         * @description Revokes the refresh token's family and clears the cookie. Succeeds
+         *     even when there is no session, so a client can always reach a
+         *     signed-out state.
+         */
+        post: operations["authLogout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -62,6 +132,30 @@ export interface components {
              */
             status: "ok";
         };
+        AuthCallbackRequest: {
+            /** @description The authorisation code from the provider. */
+            code: string;
+            /** @description The PKCE verifier matching the challenge sent to the provider. */
+            code_verifier: string;
+            /** @description Must match the redirect URI used to obtain the code. */
+            redirect_uri: string;
+            /**
+             * @description The nonce the client put in the authorize request. The server
+             *     checks the ID token carries the same one, which is what stops an
+             *     ID token captured elsewhere being replayed into this session.
+             */
+            nonce: string;
+        };
+        Session: {
+            /**
+             * @description A bearer token for /api/v1. Short-lived and unrevocable, so it is
+             *     held in memory and never in localStorage (non-negotiable 6).
+             */
+            access_token: string;
+            /** @description Seconds until the access token expires. */
+            expires_in: number;
+            user: components["schemas"]["User"];
+        };
         User: {
             /** Format: uuid */
             id: string;
@@ -95,6 +189,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description The request was malformed. */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description The access token is missing, expired or invalid. */
         Unauthorized: {
             headers: {
@@ -141,6 +244,80 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Health"];
                 };
+            };
+        };
+    };
+    authCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider name. R1 configures Google; nothing assumes it. */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthCallbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in. */
+            200: {
+                headers: {
+                    /** @description The refresh token, HttpOnly, Secure, SameSite=Lax. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    authRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated. */
+            200: {
+                headers: {
+                    /** @description The replacement refresh token. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    authLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out. */
+            204: {
+                headers: {
+                    /** @description An expired cookie, clearing the refresh token. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
