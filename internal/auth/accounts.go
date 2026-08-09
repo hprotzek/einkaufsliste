@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -235,4 +236,13 @@ func sameOptional(a, b *string) bool {
 	default:
 		return *a == *b
 	}
+}
+
+// ByID loads a user, for paths that have a session but no fresh identity.
+func (a *Accounts) ByID(ctx context.Context, id uuid.UUID) (store.User, error) {
+	user, err := store.New(a.pool).GetUserByID(ctx, pgUUID(id))
+	if err != nil {
+		return store.User{}, fmt.Errorf("auth: loading user: %w", err)
+	}
+	return user, nil
 }

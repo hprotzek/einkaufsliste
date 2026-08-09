@@ -44,3 +44,8 @@ RETURNING *;
 SELECT provider, subject FROM identities
 WHERE user_id = $1
 ORDER BY provider;
+
+-- name: GetUserByID :one
+SELECT * FROM users
+WHERE id = $1
+  AND deleted_at IS NULL;

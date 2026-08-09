@@ -37,6 +37,11 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-einkaufsliste}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-einkaufsliste}?sslmode=disable
       ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      AUTH_SIGNING_KEY: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY is required — see .env.example}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # The tunnel terminates TLS, so the stack itself speaks plain HTTP.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     depends_on:
       postgres:
         condition: service_healthy

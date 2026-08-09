@@ -71,6 +71,28 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, display_name, email, email_verified, avatar_url, created_at, updated_at, deleted_at FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.Email,
+		&i.EmailVerified,
+		&i.AvatarUrl,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getUserByIdentity = `-- name: GetUserByIdentity :one
 SELECT users.id, users.display_name, users.email, users.email_verified, users.avatar_url, users.created_at, users.updated_at, users.deleted_at FROM users
 JOIN identities ON identities.user_id = users.id

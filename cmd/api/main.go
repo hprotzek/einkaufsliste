@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hprotzek/einkaufsliste/internal/auth"
 	"github.com/hprotzek/einkaufsliste/internal/store"
 	httptransport "github.com/hprotzek/einkaufsliste/internal/transport/http"
 )
@@ -42,6 +43,18 @@ type config struct {
 	addr        string
 	logLevel    slog.Level
 	databaseURL string
+
+	// signingKey signs this server's own access tokens. Required, with no
+	// default: a shipped default is a key everybody has.
+	signingKey []byte
+
+	// providers is the OIDC configuration. R1 supplies Google; nothing in
+	// the code assumes it (non-negotiable 10).
+	providers []auth.ExchangeConfig
+
+	// secureCookies marks the refresh cookie Secure. Only a local stack on
+	// plain HTTP has any reason to turn it off.
+	secureCookies bool
 }
 
 func loadConfig() (config, error) {
@@ -52,11 +65,44 @@ func loadConfig() (config, error) {
 		return config{}, errors.New("DATABASE_URL is required")
 	}
 
+	signingKey := os.Getenv("AUTH_SIGNING_KEY")
+	if signingKey == "" {
+		return config{}, errors.New("AUTH_SIGNING_KEY is required")
+	}
+
+	providers, err := oidcProviders()
+	if err != nil {
+		return config{}, err
+	}
+
 	return config{
-		addr:        envOr("ADDR", defaultAddr),
-		logLevel:    parseLevel(os.Getenv("LOG_LEVEL")),
-		databaseURL: databaseURL,
+		addr:          envOr("ADDR", defaultAddr),
+		logLevel:      parseLevel(os.Getenv("LOG_LEVEL")),
+		databaseURL:   databaseURL,
+		signingKey:    []byte(signingKey),
+		providers:     providers,
+		secureCookies: envOr("COOKIE_SECURE", "true") != "false",
 	}, nil
+}
+
+// oidcProviders reads provider configuration from the environment. Adding a
+// second provider means another block here and nothing else.
+func oidcProviders() ([]auth.ExchangeConfig, error) {
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+
+	if clientID == "" || clientSecret == "" {
+		return nil, errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required")
+	}
+
+	return []auth.ExchangeConfig{{
+		ProviderConfig: auth.ProviderConfig{
+			Name:     "google",
+			Issuer:   envOr("GOOGLE_ISSUER", "https://accounts.google.com"),
+			ClientID: clientID,
+		},
+		ClientSecret: clientSecret,
+	}}, nil
 }
 
 func envOr(key, fallback string) string {
@@ -117,13 +163,31 @@ func run(cfg config, log *slog.Logger) error {
 
 	// Before the listener opens, so the process never serves traffic against a
 	// schema it has not migrated (spec §12.3).
-	if err := store.Migrate(startupCtx, pool, log); err != nil {
+	if migrateErr := store.Migrate(startupCtx, pool, log); migrateErr != nil {
+		return migrateErr
+	}
+
+	tokens, err := auth.NewTokenIssuer(cfg.signingKey, nil)
+	if err != nil {
+		return err
+	}
+
+	// Discovery reaches the provider, so a misconfigured deployment fails
+	// here rather than on the first person trying to sign in.
+	exchanger, err := auth.NewExchanger(startupCtx, cfg.providers)
+	if err != nil {
 		return err
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           httptransport.NewRouter(log),
+		Addr: cfg.addr,
+		Handler: httptransport.NewRouter(httptransport.Deps{
+			Log:           log,
+			Exchanger:     exchanger,
+			Accounts:      auth.NewAccounts(pool, log),
+			Sessions:      auth.NewSessions(pool, tokens),
+			SecureCookies: cfg.secureCookies,
+		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
