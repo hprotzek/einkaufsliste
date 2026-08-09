@@ -60,6 +60,11 @@ linters:
           - errcheck
           - gosec
           - noctx
+          # Test helpers close response bodies through t.Cleanup, which
+          # bodyclose cannot follow — it reports every call through a helper.
+          # Excluding it in tests keeps the signal in non-test code, where a
+          # leaked body actually matters.
+          - bodyclose
 
 formatters:
   enable:

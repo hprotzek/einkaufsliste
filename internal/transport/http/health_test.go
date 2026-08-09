@@ -15,11 +15,15 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
+// These tests only exercise routing and the health endpoint, so the auth
+// dependencies stay nil: reaching them would mean a route was wired to the
+// wrong handler, and a nil panic says so loudly.
+
 func TestHealthzReturnsOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	NewRouter(testLogger()).ServeHTTP(rec, req)
+	NewRouter(Deps{Log: testLogger()}).ServeHTTP(rec, req)
 
 	res := rec.Result()
 	defer res.Body.Close()
@@ -51,7 +55,7 @@ func TestMeIsRoutedButNotImplemented(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	rec := httptest.NewRecorder()
 
-	NewRouter(testLogger()).ServeHTTP(rec, req)
+	NewRouter(Deps{Log: testLogger()}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
@@ -62,7 +66,7 @@ func TestUnknownRouteReturns404(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
 	rec := httptest.NewRecorder()
 
-	NewRouter(testLogger()).ServeHTTP(rec, req)
+	NewRouter(Deps{Log: testLogger()}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)

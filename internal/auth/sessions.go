@@ -184,3 +184,24 @@ func pgUUID(id uuid.UUID) pgtype.UUID {
 func uuidFrom(id pgtype.UUID) uuid.UUID {
 	return id.Bytes
 }
+
+// RevokeByToken ends the session a refresh token belongs to, which is what
+// logout does. An unknown token is not an error: the caller is signed out
+// either way, and a logout that can fail leaves people stuck.
+func (s *Sessions) RevokeByToken(ctx context.Context, refreshToken string) error {
+	q := store.New(s.pool)
+
+	existing, err := q.GetRefreshTokenByHash(ctx, HashRefreshToken(refreshToken))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("auth: looking up refresh token: %w", err)
+	}
+
+	if _, err := q.RevokeRefreshTokenFamily(ctx, existing.FamilyID); err != nil {
+		return fmt.Errorf("auth: revoking family: %w", err)
+	}
+
+	return nil
+}

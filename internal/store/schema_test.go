@@ -69,10 +69,14 @@ func assertPGCode(t *testing.T, err error, want string) {
 }
 
 func insertUser(ctx context.Context, pool *pgxpool.Pool, email string) (string, error) {
+	return insertUserVerified(ctx, pool, email, false)
+}
+
+func insertUserVerified(ctx context.Context, pool *pgxpool.Pool, email string, verified bool) (string, error) {
 	var id string
 	err := pool.QueryRow(ctx,
-		`INSERT INTO users (display_name, email) VALUES ($1, $2) RETURNING id`,
-		"Test Person", email,
+		`INSERT INTO users (display_name, email, email_verified) VALUES ($1, $2, $3) RETURNING id`,
+		"Test Person", email, verified,
 	).Scan(&id)
 	return id, err
 }
@@ -80,16 +84,34 @@ func insertUser(ctx context.Context, pool *pgxpool.Pool, email string) (string, 
 // Norwegian users have addresses with æ/ø/å in them, and Google will happily
 // send the same address capitalised differently on different days. citext is
 // what makes those the same account; a naive lower() would not be safe here.
-func TestUserEmailIsUniqueCaseInsensitively(t *testing.T) {
+//
+// Since migration 00004 the guarantee is scoped to verified addresses
+// (decision 5b): §9 needs an unverified duplicate to be creatable. The
+// case-insensitivity is unchanged and is what this asserts.
+func TestVerifiedEmailIsUniqueCaseInsensitively(t *testing.T) {
 	ctx := t.Context()
 	pool := migratedPool(t)
 
-	if _, err := insertUser(ctx, pool, "Kari.Nordmann@Example.NO"); err != nil {
+	if _, err := insertUserVerified(ctx, pool, "Kari.Nordmann@Example.NO", true); err != nil {
 		t.Fatalf("inserting first user: %v", err)
 	}
 
-	_, err := insertUser(ctx, pool, "kari.nordmann@example.no")
+	_, err := insertUserVerified(ctx, pool, "kari.nordmann@example.no", true)
 	assertPGCode(t, err, codeUniqueViolation)
+}
+
+// The other half of decision 5b: without this, §9's "create a separate
+// account rather than guessing" is impossible to implement.
+func TestUnverifiedDuplicateEmailIsAllowed(t *testing.T) {
+	ctx := t.Context()
+	pool := migratedPool(t)
+
+	if _, err := insertUserVerified(ctx, pool, "kari@example.no", true); err != nil {
+		t.Fatalf("inserting the verified user: %v", err)
+	}
+	if _, err := insertUserVerified(ctx, pool, "KARI@example.no", false); err != nil {
+		t.Errorf("an unverified duplicate was rejected: %v", err)
+	}
 }
 
 func TestUserEmailPreservesNorwegianCharacters(t *testing.T) {
