@@ -3,3 +3,27 @@
 //   sqlc v1.31.1
 
 package store
+
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+type Identity struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	Provider  string
+	Subject   string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+type User struct {
+	ID            pgtype.UUID
+	DisplayName   string
+	Email         string
+	EmailVerified bool
+	AvatarUrl     *string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	DeletedAt     pgtype.Timestamptz
+}
