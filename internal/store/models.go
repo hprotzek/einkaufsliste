@@ -17,6 +17,17 @@ type Identity struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type RefreshToken struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	FamilyID  pgtype.UUID
+	TokenHash string
+	IssuedAt  pgtype.Timestamptz
+	ExpiresAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
+	RevokedAt pgtype.Timestamptz
+}
+
 type User struct {
 	ID            pgtype.UUID
 	DisplayName   string
