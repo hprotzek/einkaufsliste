@@ -48,17 +48,18 @@ func TestHealthzReturnsOK(t *testing.T) {
 	}
 }
 
-// /me is in the contract but has no handler until M1. It must be routed and
-// answer 501 — proof that the router really is built from openapi.yaml, not
-// from a hand-maintained list of paths.
-func TestMeIsRoutedButNotImplemented(t *testing.T) {
+// /me answered 501 until task 1.9 implemented it. Now it is routed and
+// guarded: an unauthenticated request must be refused rather than reaching
+// the handler's body. The router is still built from openapi.yaml, which is
+// what routing it at all demonstrates.
+func TestMeRequiresAuthentication(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	rec := httptest.NewRecorder()
 
 	NewRouter(Deps{Log: testLogger()}).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

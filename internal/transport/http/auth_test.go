@@ -75,6 +75,7 @@ func newStack(t *testing.T) *stack {
 		Exchanger: exchanger,
 		Accounts:  auth.NewAccounts(pool, log),
 		Sessions:  auth.NewSessions(pool, tokens),
+		Tokens:    tokens,
 		// The test server speaks plain HTTP, so a Secure cookie would never
 		// come back. Production defaults to true.
 		SecureCookies: false,
@@ -344,5 +345,79 @@ func TestSecondSignInIsTheSameAccount(t *testing.T) {
 
 	if first.User.ID != second.User.ID {
 		t.Errorf("user id changed between sign-ins: %s then %s", first.User.ID, second.User.ID)
+	}
+}
+
+// get is a GET with an optional bearer token.
+func (s *stack) get(t *testing.T, path, accessToken string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.server.URL+path, nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+
+	res, err := s.client.Do(req)
+	if err != nil {
+		t.Fatalf("getting %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = res.Body.Close() })
+
+	return res
+}
+
+// The visible half of 1.9's done-when: sign in, then see your own name.
+func TestMeReturnsTheSignedInUser(t *testing.T) {
+	s := newStack(t)
+
+	_, session := s.signIn(t, nil)
+
+	res := s.get(t, "/api/v1/me", session.AccessToken)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+
+	var user struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&user); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+
+	if user.DisplayName != "Kari Nordmann" {
+		t.Errorf("display_name = %q, want the name from the ID token", user.DisplayName)
+	}
+	if user.ID != session.User.ID {
+		t.Errorf("id = %q, want %q", user.ID, session.User.ID)
+	}
+}
+
+func TestMeRejectsBadCredentials(t *testing.T) {
+	s := newStack(t)
+	_, session := s.signIn(t, nil)
+
+	tests := []struct{ name, token string }{
+		{"no token", ""},
+		{"nonsense", "not-a-token"},
+		{"the refresh token, not the access token", "some-other-value"},
+		// A valid token with a byte flipped: the signature must fail.
+		{"tampered", session.AccessToken[:len(session.AccessToken)-1] + "x"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := s.get(t, "/api/v1/me", tc.token)
+			if res.StatusCode != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", res.StatusCode)
+			}
+			if got := res.Header.Get("WWW-Authenticate"); got == "" {
+				t.Error("no WWW-Authenticate header on a 401")
+			}
+		})
 	}
 }

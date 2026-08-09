@@ -25,6 +25,7 @@ type Deps struct {
 	Exchanger *auth.Exchanger
 	Accounts  *auth.Accounts
 	Sessions  *auth.Sessions
+	Tokens    *auth.TokenIssuer
 
 	// SecureCookies marks the refresh cookie Secure. True everywhere real:
 	// only a local stack served over plain HTTP has any reason to turn it
@@ -47,6 +48,7 @@ type server struct {
 	exchanger     *auth.Exchanger
 	accounts      *auth.Accounts
 	sessions      *auth.Sessions
+	tokens        *auth.TokenIssuer
 	secureCookies bool
 }
 
@@ -64,6 +66,7 @@ func NewRouter(deps Deps) http.Handler {
 		exchanger:     deps.Exchanger,
 		accounts:      deps.Accounts,
 		sessions:      deps.Sessions,
+		tokens:        deps.Tokens,
 		secureCookies: deps.SecureCookies,
 	}, r)
 }
