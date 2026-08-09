@@ -95,6 +95,24 @@ Postgres and the API publish no host ports; only Caddy does. In production even
 that is reached over the container network by `cloudflared`, so nothing is
 exposed on the host and no router port is opened.
 
+## Signing in
+
+Sign-in is Google only (spec §9.1). Three values, all in `.env`:
+
+```
+GOOGLE_CLIENT_ID=...apps.googleusercontent.com   # server: token exchange
+GOOGLE_CLIENT_SECRET=...                         # server: never leaves it
+VITE_GOOGLE_CLIENT_ID=...                        # web app: baked in at build
+```
+
+The redirect URI registered with Google must be `https://yourdomain/auth/callback`
+and match byte-for-byte what the app sends.
+
+`VITE_GOOGLE_CLIENT_ID` is read when `make web` runs, not when the container
+starts, so rebuild the app after changing it. With the two server values
+unset the stack still starts and serves — sign-in just reports the provider
+as unknown.
+
 ## Container images
 
 Every merge to `main` publishes a multi-architecture image to GHCR:

@@ -1,58 +1,106 @@
 import { useEffect, useState } from "react";
 
 import type { components } from "./api/schema";
+import {
+  beginSignIn,
+  CALLBACK_PATH,
+  completeSignIn,
+  restore,
+  signOut,
+} from "./auth/session";
 
-// Straight from api/openapi.yaml (non-negotiable 4). Editing the contract
-// without regenerating breaks the build here, not silently at runtime.
-type Health = components["schemas"]["Health"];
+type User = components["schemas"]["User"];
 
-type Reachability =
-  | { state: "checking" }
-  | { state: "reachable"; status: Health["status"] }
-  | { state: "unreachable"; detail: string };
-
-// Same-origin, so no base URL: Caddy serves this app and proxies the API on
-// one origin in production, and Vite proxies the same paths in dev (§5.1).
-async function fetchHealth(signal: AbortSignal): Promise<Health> {
-  const response = await fetch("/healthz", { signal });
-  if (!response.ok) {
-    throw new Error(`/healthz returned ${response.status}`);
-  }
-  return (await response.json()) as Health;
-}
+type State =
+  | { status: "loading" }
+  | { status: "signed-out"; error?: string }
+  | { status: "signed-in"; user: User };
 
 export function App() {
-  const [api, setApi] = useState<Reachability>({ state: "checking" });
+  const [state, setState] = useState<State>({ status: "loading" });
 
   useEffect(() => {
-    const controller = new AbortController();
+    let cancelled = false;
 
-    fetchHealth(controller.signal)
-      .then((health) => setApi({ state: "reachable", status: health.status }))
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) {
-          return;
+    const settle = (next: State) => {
+      if (!cancelled) {
+        setState(next);
+      }
+    };
+
+    const start = async () => {
+      // Returning from the provider: finish the exchange, then take the code
+      // out of the URL so a reload cannot replay it.
+      if (window.location.pathname === CALLBACK_PATH) {
+        try {
+          const user = await completeSignIn(window.location.search);
+          window.history.replaceState(null, "", "/");
+          settle({ status: "signed-in", user });
+        } catch (error: unknown) {
+          window.history.replaceState(null, "", "/");
+          settle({
+            status: "signed-out",
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-        setApi({
-          state: "unreachable",
-          detail: error instanceof Error ? error.message : String(error),
-        });
-      });
+        return;
+      }
 
-    return () => controller.abort();
+      // Ordinary load: the access token died with the last page, but the
+      // refresh cookie may not have.
+      const user = await restore();
+      settle(user ? { status: "signed-in", user } : { status: "signed-out" });
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  if (state.status === "loading") {
+    return (
+      <main>
+        <h1>Einkaufsliste</h1>
+        <p>Checking your session…</p>
+      </main>
+    );
+  }
+
+  if (state.status === "signed-out") {
+    return (
+      <main>
+        <h1>Einkaufsliste</h1>
+        {state.error && <p role="alert">{state.error}</p>}
+        <p>
+          <button type="button" onClick={() => void beginSignIn()}>
+            Sign in with Google
+          </button>
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main>
       <h1>Einkaufsliste</h1>
       <p>
-        Nothing to show yet — there is no list, and no way to sign in. This
-        page exists to prove the app builds, ships and reaches its API.
+        Signed in as <strong>{state.user.display_name}</strong>.
       </p>
-      <p data-testid="api-status">
-        API: {api.state === "checking" && "checking…"}
-        {api.state === "reachable" && api.status}
-        {api.state === "unreachable" && `unreachable (${api.detail})`}
+      <p>
+        There is no list yet — that arrives with M2. This page exists to prove
+        sign-in works end to end.
+      </p>
+      <p>
+        <button
+          type="button"
+          onClick={() => {
+            void signOut().then(() => setState({ status: "signed-out" }));
+          }}
+        >
+          Sign out
+        </button>
       </p>
     </main>
   );
