@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -25,6 +26,23 @@ func (e HealthStatus) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AuthCallbackRequest defines model for AuthCallbackRequest.
+type AuthCallbackRequest struct {
+	// Code The authorisation code from the provider.
+	Code string `json:"code"`
+
+	// CodeVerifier The PKCE verifier matching the challenge sent to the provider.
+	CodeVerifier string `json:"code_verifier"`
+
+	// Nonce The nonce the client put in the authorize request. The server
+	// checks the ID token carries the same one, which is what stops an
+	// ID token captured elsewhere being replayed into this session.
+	Nonce string `json:"nonce"`
+
+	// RedirectUri Must match the redirect URI used to obtain the code.
+	RedirectUri string `json:"redirect_uri"`
 }
 
 // Health Example: {"status":"ok"}
@@ -45,6 +63,17 @@ type Problem struct {
 	Type     *string `json:"type,omitempty"`
 }
 
+// Session defines model for Session.
+type Session struct {
+	// AccessToken A bearer token for /api/v1. Short-lived and unrevocable, so it is
+	// held in memory and never in localStorage (non-negotiable 6).
+	AccessToken string `json:"access_token"`
+
+	// ExpiresIn Seconds until the access token expires.
+	ExpiresIn int  `json:"expires_in"`
+	User      User `json:"user"`
+}
+
 // User defines model for User.
 type User struct {
 	// AvatarUrl The provider's avatar URL, hotlinked. Null when the provider
@@ -58,14 +87,29 @@ type User struct {
 	Id          openapi_types.UUID  `json:"id"`
 }
 
+// BadRequest RFC 9457 problem detail.
+type BadRequest = Problem
+
 // NotImplemented RFC 9457 problem detail.
 type NotImplemented = Problem
 
 // Unauthorized RFC 9457 problem detail.
 type Unauthorized = Problem
 
+// AuthCallbackJSONRequestBody defines body for AuthCallback for application/json ContentType.
+type AuthCallbackJSONRequestBody = AuthCallbackRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// AuthLogout End this session
+	// (POST /api/v1/auth/logout)
+	AuthLogout(w http.ResponseWriter, r *http.Request)
+	// AuthCallback Exchange an authorisation code for a session
+	// (POST /api/v1/auth/oidc/{provider}/callback)
+	AuthCallback(w http.ResponseWriter, r *http.Request, provider string)
+	// AuthRefresh Exchange the refresh cookie for a new session
+	// (POST /api/v1/auth/refresh)
+	AuthRefresh(w http.ResponseWriter, r *http.Request)
 	// GetMe The signed-in user
 	// (GET /api/v1/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
@@ -77,6 +121,24 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// AuthLogout End this session
+// (POST /api/v1/auth/logout)
+func (_ Unimplemented) AuthLogout(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AuthCallback Exchange an authorisation code for a session
+// (POST /api/v1/auth/oidc/{provider}/callback)
+func (_ Unimplemented) AuthCallback(w http.ResponseWriter, r *http.Request, provider string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AuthRefresh Exchange the refresh cookie for a new session
+// (POST /api/v1/auth/refresh)
+func (_ Unimplemented) AuthRefresh(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // GetMe The signed-in user
 // (GET /api/v1/me)
@@ -98,6 +160,60 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// AuthLogout operation middleware
+func (siw *ServerInterfaceWrapper) AuthLogout(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AuthLogout(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AuthCallback operation middleware
+func (siw *ServerInterfaceWrapper) AuthCallback(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", chi.URLParam(r, "provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AuthCallback(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AuthRefresh operation middleware
+func (siw *ServerInterfaceWrapper) AuthRefresh(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AuthRefresh(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // GetMe operation middleware
 func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +358,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/healthz", wrapper.GetHealth)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/auth/oidc/{provider}/callback", wrapper.AuthCallback)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/auth/refresh", wrapper.AuthRefresh)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/auth/logout", wrapper.AuthLogout)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/me", wrapper.GetMe)
