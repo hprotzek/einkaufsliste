@@ -91,8 +91,19 @@ func oidcProviders() ([]auth.ExchangeConfig, error) {
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")
 	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
 
+	// Both empty means sign-in is simply not set up yet (task 1.8). The
+	// service starts without it; requiring credentials to serve /healthz and
+	// static files would make the stack unrunnable for anyone who has not
+	// been to the Google console yet.
+	if clientID == "" && clientSecret == "" {
+		return nil, nil
+	}
+
+	// One without the other is a genuine misconfiguration, and silently
+	// disabling sign-in because half of it was set is exactly the failure
+	// that gets found in production.
 	if clientID == "" || clientSecret == "" {
-		return nil, errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required")
+		return nil, errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together")
 	}
 
 	return []auth.ExchangeConfig{{
@@ -177,6 +188,10 @@ func run(cfg config, log *slog.Logger) error {
 	exchanger, err := auth.NewExchanger(startupCtx, cfg.providers)
 	if err != nil {
 		return err
+	}
+
+	if len(cfg.providers) == 0 {
+		log.Warn("no OIDC provider configured; sign-in is unavailable until GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set")
 	}
 
 	srv := &http.Server{

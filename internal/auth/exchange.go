@@ -46,6 +46,17 @@ type ExchangeConfig struct {
 // NewExchanger discovers each provider's endpoints. Like NewVerifier it
 // reaches the network, so it belongs in start-up wiring.
 func NewExchanger(ctx context.Context, configs []ExchangeConfig) (*Exchanger, error) {
+	// No providers is a valid state, not a misconfiguration: until task 1.8
+	// creates the Google OAuth client there is nothing to configure, and the
+	// service still has a health endpoint, a schema and static files to
+	// serve. Sign-in reports the provider as unknown, which is true.
+	if len(configs) == 0 {
+		return &Exchanger{
+			verifier: &Verifier{providers: map[string]*oidc.IDTokenVerifier{}},
+			configs:  map[string]exchangeConfig{},
+		}, nil
+	}
+
 	providerConfigs := make([]ProviderConfig, 0, len(configs))
 	for _, cfg := range configs {
 		providerConfigs = append(providerConfigs, cfg.ProviderConfig)
