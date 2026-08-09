@@ -201,6 +201,7 @@ func run(cfg config, log *slog.Logger) error {
 			Exchanger:     exchanger,
 			Accounts:      auth.NewAccounts(pool, log),
 			Sessions:      auth.NewSessions(pool, tokens),
+			Tokens:        tokens,
 			SecureCookies: cfg.secureCookies,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
