@@ -5,6 +5,7 @@ import {
   beginSignIn,
   CALLBACK_PATH,
   completeSignIn,
+  RefreshUnreachableError,
   restore,
   signOut,
 } from "./auth/session";
@@ -14,6 +15,9 @@ type User = components["schemas"]["User"];
 type State =
   | { status: "loading" }
   | { status: "signed-out"; error?: string }
+  // The server could not be reached. Says nothing about the session, so it
+  // must never be shown as signed out (spec §10.5).
+  | { status: "offline" }
   | { status: "signed-in"; user: User };
 
 export function App() {
@@ -48,8 +52,16 @@ export function App() {
 
       // Ordinary load: the access token died with the last page, but the
       // refresh cookie may not have.
-      const user = await restore();
-      settle(user ? { status: "signed-in", user } : { status: "signed-out" });
+      try {
+        const user = await restore();
+        settle(user ? { status: "signed-in", user } : { status: "signed-out" });
+      } catch (error: unknown) {
+        if (error instanceof RefreshUnreachableError) {
+          settle({ status: "offline" });
+          return;
+        }
+        throw error;
+      }
     };
 
     void start();
@@ -64,6 +76,20 @@ export function App() {
       <main>
         <h1>Einkaufsliste</h1>
         <p>Checking your session…</p>
+      </main>
+    );
+  }
+
+  if (state.status === "offline") {
+    return (
+      <main>
+        <h1>Einkaufsliste</h1>
+        <p role="status">Can&apos;t reach the server right now. Nothing has been lost.</p>
+        <p>
+          <button type="button" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </p>
       </main>
     );
   }

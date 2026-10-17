@@ -12,13 +12,18 @@ import (
 )
 
 const consumeRefreshToken = `-- name: ConsumeRefreshToken :one
-UPDATE refresh_tokens
+UPDATE refresh_tokens AS spent
 SET used_at = now()
-WHERE token_hash = $1
-  AND used_at IS NULL
-  AND revoked_at IS NULL
-  AND expires_at > now()
-RETURNING id, user_id, family_id, token_hash, issued_at, expires_at, used_at, revoked_at
+WHERE spent.token_hash = $1
+  AND spent.used_at IS NULL
+  AND spent.revoked_at IS NULL
+  AND spent.expires_at > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM refresh_tokens revoked
+      WHERE revoked.family_id = spent.family_id
+        AND revoked.revoked_at IS NOT NULL
+  )
+RETURNING spent.id, spent.user_id, spent.family_id, spent.token_hash, spent.issued_at, spent.expires_at, spent.used_at, spent.revoked_at
 `
 
 // ConsumeRefreshToken marks a token spent and returns it, in one statement.
@@ -28,6 +33,11 @@ RETURNING id, user_id, family_id, token_hash, issued_at, expires_at, used_at, re
 // token both pass a SELECT, and only one can win this. A caller that gets no
 // row must then ask why — missing, already spent, revoked or expired are
 // very different answers, and only one of them is an attack.
+//
+// A family with any revoked row is dead as a whole. Revocation runs under
+// READ COMMITTED, so a successor inserted by a rotation committing at the
+// same moment can escape the revoking UPDATE; refusing to consume anything
+// in a partly revoked family makes such a straggler useless.
 func (q *Queries) ConsumeRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error) {
 	row := q.db.QueryRow(ctx, consumeRefreshToken, tokenHash)
 	var i RefreshToken
@@ -82,6 +92,11 @@ type InsertRefreshTokenParams struct {
 
 // InsertRefreshToken records a newly issued token. The caller supplies the
 // family: a fresh uuid for a new sign-in, or the existing one when rotating.
+//
+// issued_at must stay the column default, now(). IsBenignRefreshRace relies
+// on a successor's issued_at equalling the spent token's used_at, which holds
+// only because both are now() in the rotation's transaction. Setting
+// issued_at explicitly here would quietly break benign-race detection.
 func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (RefreshToken, error) {
 	row := q.db.QueryRow(ctx, insertRefreshToken,
 		arg.UserID,
@@ -101,6 +116,64 @@ func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshToken
 		&i.RevokedAt,
 	)
 	return i, err
+}
+
+const isBenignRefreshRace = `-- name: IsBenignRefreshRace :one
+SELECT
+    $1::timestamptz > now() - make_interval(secs => $2::float8)
+    AND EXISTS (
+        SELECT 1 FROM refresh_tokens successor
+        WHERE successor.family_id = $3::uuid
+          AND successor.issued_at >= $1::timestamptz
+          AND successor.used_at IS NULL
+          AND successor.revoked_at IS NULL
+          AND successor.expires_at > now()
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM refresh_tokens descendant
+        WHERE descendant.family_id = $3::uuid
+          AND descendant.issued_at >= $1::timestamptz
+          AND descendant.used_at IS NOT NULL
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM refresh_tokens revoked
+        WHERE revoked.family_id = $3::uuid
+          AND revoked.revoked_at IS NOT NULL
+    ) AS benign
+`
+
+type IsBenignRefreshRaceParams struct {
+	UsedAt       pgtype.Timestamptz
+	GraceSeconds float64
+	FamilyID     pgtype.UUID
+}
+
+// IsBenignRefreshRace decides whether a token that was already spent is
+// being presented by an honest client that lost a race, rather than replayed
+// by somebody who stole it.
+//
+// Two tabs share one refresh cookie. When both refresh at the same moment,
+// one rotation wins and the other finds the token spent. Reading that as a
+// replay revokes the family, which takes the winner's brand-new token with
+// it and signs out both tabs (spec §9.2).
+//
+// It is benign only when all three hold:
+//   - the token was spent within the grace window;
+//   - its successor exists and is still live — unused, unrevoked, unexpired;
+//   - nothing descended from that rotation has been used since.
+//
+// The last condition is what keeps the window from being a way around reuse
+// detection: once the chain has moved on, the old token is history.
+//
+// "Descended from the rotation" is issued_at >= the token's used_at. Both are
+// now() inside the rotation's transaction, which Postgres fixes for the whole
+// transaction, so the successor's issued_at equals the spent token's used_at
+// exactly and every later token is issued after it.
+func (q *Queries) IsBenignRefreshRace(ctx context.Context, arg IsBenignRefreshRaceParams) (*bool, error) {
+	row := q.db.QueryRow(ctx, isBenignRefreshRace, arg.UsedAt, arg.GraceSeconds, arg.FamilyID)
+	var benign *bool
+	err := row.Scan(&benign)
+	return benign, err
 }
 
 const revokeRefreshTokenFamily = `-- name: RevokeRefreshTokenFamily :execrows

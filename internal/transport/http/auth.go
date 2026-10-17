@@ -64,6 +64,21 @@ func (s server) AuthCallback(w http.ResponseWriter, r *http.Request, provider st
 		return
 	}
 
+	// A refresh cookie still in this browser belongs to a session the new one
+	// replaces, so its family ends here. This is what closes the gap the
+	// reuse grace window opens (spec §9.2): when a thief rotates first, the
+	// victim's refresh is a benign race and gets a 401, and the victim signs
+	// in again. Without this, the old cookie would be overwritten without
+	// ever being presented past the window, and the thief's family would
+	// live on for the refresh token's whole lifetime.
+	if previous := refreshCookie(r); previous != "" {
+		if revokeErr := s.sessions.RevokeByToken(ctx, previous); revokeErr != nil {
+			s.log.ErrorContext(ctx, "ending the previous session on sign-in", slog.Any("error", revokeErr))
+			s.writeProblem(w, r, http.StatusInternalServerError, "could not complete sign-in")
+			return
+		}
+	}
+
 	session, err := s.sessions.Issue(ctx, user.ID.Bytes)
 	if err != nil {
 		s.log.ErrorContext(ctx, "issuing a session", slog.Any("error", err))
@@ -90,6 +105,15 @@ func (s server) AuthRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, err := s.sessions.Rotate(ctx, presented)
+	if errors.Is(err, auth.ErrRefreshTokenRaced) {
+		// Another tab sharing this cookie rotated it a moment ago. Its
+		// response has already replaced the cookie with a live token, so
+		// clearing it here would sign out the winner (spec §9.2). Same 401
+		// as every other failure: the body never says why.
+		s.log.InfoContext(ctx, "refresh lost a concurrent rotation; the session is untouched")
+		s.writeProblem(w, r, http.StatusUnauthorized, "not signed in")
+		return
+	}
 	if err != nil {
 		// A replay is worth an alarm in the log. The response is the same
 		// either way: telling the caller their token was recognised but spent

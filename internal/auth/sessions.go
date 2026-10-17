@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,7 +28,24 @@ var (
 	// which of the two happened. Knowing "that one was already used" tells an
 	// attacker their stolen token was genuine.
 	ErrRefreshTokenReused = errors.New("auth: refresh token reused")
+
+	// ErrRefreshTokenRaced means an honest client lost a race: two tabs
+	// presented the same token at once, the other one rotated it, and this
+	// one arrived within the grace window while the successor was still
+	// fresh. Nothing is revoked.
+	//
+	// The caller must not clear the refresh cookie on this error. The tabs
+	// share it, and the winner's response has just replaced it with a live
+	// token; clearing it here would sign out the winner from the other side.
+	ErrRefreshTokenRaced = errors.New("auth: refresh token lost a concurrent rotation")
 )
+
+// ReuseGrace is how long after a rotation the spent token may arrive again
+// without being treated as a replay, provided its successor is still unused
+// (spec §9.2). Long enough to cover two tabs waking at once on a slow mobile
+// connection; short enough that a thief replaying a captured token later is
+// still caught.
+const ReuseGrace = 10 * time.Second
 
 // Session is a freshly issued pair. The refresh token's plaintext appears
 // here once and is never recoverable afterwards.
@@ -115,8 +133,21 @@ func (s *Sessions) diagnoseFailedConsume(ctx context.Context, hash string) error
 		return fmt.Errorf("auth: looking up refresh token: %w", err)
 	}
 
-	// Already spent: this is a replay. Kill the family.
+	// Already spent. Either an honest tab lost a race moments ago, or this
+	// is a replay — and only the replay kills the family.
 	if existing.UsedAt.Valid {
+		benign, err := q.IsBenignRefreshRace(ctx, store.IsBenignRefreshRaceParams{
+			UsedAt:       existing.UsedAt,
+			GraceSeconds: ReuseGrace.Seconds(),
+			FamilyID:     existing.FamilyID,
+		})
+		if err != nil {
+			return fmt.Errorf("auth: checking for a benign refresh race: %w", err)
+		}
+		if benign != nil && *benign {
+			return ErrRefreshTokenRaced
+		}
+
 		if _, err := q.RevokeRefreshTokenFamily(ctx, existing.FamilyID); err != nil {
 			return fmt.Errorf("auth: revoking reused token family: %w", err)
 		}

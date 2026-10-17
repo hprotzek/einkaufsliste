@@ -128,26 +128,108 @@ export async function completeSignIn(search: string): Promise<User> {
 }
 
 /**
+ * Every tab of this app shares one refresh cookie, so a refresh in one tab
+ * must not overlap a refresh in another. The name is per-origin: the lock is
+ * only ever contended by tabs of this same app.
+ */
+const REFRESH_LOCK = "einkaufsliste.auth-refresh";
+
+/**
+ * A refresh that never answers would otherwise hold the cross-tab lock
+ * forever, and every tab of the app would wait behind it.
+ */
+const REFRESH_TIMEOUT_MS = 15_000;
+
+/**
+ * How long to wait before the one retry after a 401. A tab that lost a race
+ * to another tab gets a 401 while the winner's response is still landing;
+ * by the time this has passed, the shared cookie holds the winner's
+ * successor and the retry rotates that one (spec §9.2).
+ */
+const RACE_RETRY_DELAY_MS = 500;
+
+/**
+ * An abort signal that fires after `ms`. AbortSignal.timeout needs Safari 16;
+ * on older iOS it does not exist, and calling it would throw on every refresh.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
+/**
+ * Thrown when the refresh could not reach the server at all — offline, or
+ * timed out. Distinct from a refusal: the session may be perfectly fine, so
+ * callers must not treat this as signed out.
+ */
+export class RefreshUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super("could not reach the server to refresh the session", { cause });
+    this.name = "RefreshUnreachableError";
+  }
+}
+
+async function postRefreshOnce(): Promise<Response> {
+  try {
+    return await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      signal: timeoutSignal(REFRESH_TIMEOUT_MS),
+    });
+  } catch (error: unknown) {
+    throw new RefreshUnreachableError(error);
+  }
+}
+
+/**
+ * Resolves to the new access token, or null when the server refused the
+ * cookie — the session is over. Rejects with RefreshUnreachableError when the
+ * server could not be reached, which says nothing about the session.
+ */
+async function postRefresh(): Promise<string | null> {
+  let response = await postRefreshOnce();
+
+  // One retry, never more: a second 401 means the session really is over,
+  // and looping would only hammer the server with a dead cookie.
+  if (response.status === 401) {
+    await new Promise((resolve) => setTimeout(resolve, RACE_RETRY_DELAY_MS));
+    response = await postRefreshOnce();
+  }
+
+  if (!response.ok) {
+    accessToken = null;
+    return null;
+  }
+
+  const session = (await response.json()) as SessionResponse;
+  accessToken = session.access_token;
+  return accessToken;
+}
+
+/**
  * Exchanges the refresh cookie for a new access token.
  *
- * Single-flight: several requests noticing a 401 at once must produce one
- * refresh, not several. Rotation means the second would present a token the
- * first has already spent, which the server correctly reads as a replay and
- * answers by revoking the whole family — signing the user out for being
- * mildly parallel.
+ * Serialised at two levels, because rotation means a second refresh with the
+ * same cookie presents a token the first has already spent:
+ *
+ * - Within this tab, single-flight: several requests noticing a 401 at once
+ *   share one refresh.
+ * - Across tabs, a Web Lock: the installed app and a browser tab, or two tabs
+ *   restored together, take turns. The second waits, then sends the cookie
+ *   the first has just replaced, and rotates that one cleanly (spec §9.2).
+ *
+ * Web Locks exist only in a secure context. A local stack on plain HTTP
+ * reached by LAN address has none, and falls back to tab-local single-flight;
+ * the server's grace window still keeps a lost race from signing anyone out.
  */
 export function refresh(): Promise<string | null> {
   refreshing ??= (async () => {
     try {
-      const response = await fetch("/api/v1/auth/refresh", { method: "POST" });
-      if (!response.ok) {
-        accessToken = null;
-        return null;
-      }
-
-      const session = (await response.json()) as SessionResponse;
-      accessToken = session.access_token;
-      return accessToken;
+      const locks = globalThis.navigator?.locks;
+      return locks ? await locks.request(REFRESH_LOCK, postRefresh) : await postRefresh();
     } finally {
       // Cleared whatever happened, so the next 401 starts a fresh attempt
       // rather than resolving against a stale promise.
