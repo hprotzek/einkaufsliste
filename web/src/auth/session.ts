@@ -148,38 +148,65 @@ const REFRESH_TIMEOUT_MS = 15_000;
  */
 const RACE_RETRY_DELAY_MS = 500;
 
-async function postRefreshOnce(): Promise<Response> {
-  return fetch("/api/v1/auth/refresh", {
-    method: "POST",
-    signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
-  });
+/**
+ * An abort signal that fires after `ms`. AbortSignal.timeout needs Safari 16;
+ * on older iOS it does not exist, and calling it would throw on every refresh.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
 }
 
-async function postRefresh(): Promise<string | null> {
+/**
+ * Thrown when the refresh could not reach the server at all — offline, or
+ * timed out. Distinct from a refusal: the session may be perfectly fine, so
+ * callers must not treat this as signed out.
+ */
+export class RefreshUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super("could not reach the server to refresh the session", { cause });
+    this.name = "RefreshUnreachableError";
+  }
+}
+
+async function postRefreshOnce(): Promise<Response> {
   try {
-    let response = await postRefreshOnce();
+    return await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      signal: timeoutSignal(REFRESH_TIMEOUT_MS),
+    });
+  } catch (error: unknown) {
+    throw new RefreshUnreachableError(error);
+  }
+}
 
-    // One retry, never more: a second 401 means the session really is over,
-    // and looping would only hammer the server with a dead cookie.
-    if (response.status === 401) {
-      await new Promise((resolve) => setTimeout(resolve, RACE_RETRY_DELAY_MS));
-      response = await postRefreshOnce();
-    }
+/**
+ * Resolves to the new access token, or null when the server refused the
+ * cookie — the session is over. Rejects with RefreshUnreachableError when the
+ * server could not be reached, which says nothing about the session.
+ */
+async function postRefresh(): Promise<string | null> {
+  let response = await postRefreshOnce();
 
-    if (!response.ok) {
-      accessToken = null;
-      return null;
-    }
+  // One retry, never more: a second 401 means the session really is over,
+  // and looping would only hammer the server with a dead cookie.
+  if (response.status === 401) {
+    await new Promise((resolve) => setTimeout(resolve, RACE_RETRY_DELAY_MS));
+    response = await postRefreshOnce();
+  }
 
-    const session = (await response.json()) as SessionResponse;
-    accessToken = session.access_token;
-    return accessToken;
-  } catch {
-    // Timed out or offline. The session may well be fine; there is simply
-    // no fresh access token right now, and the next request will try again.
+  if (!response.ok) {
     accessToken = null;
     return null;
   }
+
+  const session = (await response.json()) as SessionResponse;
+  accessToken = session.access_token;
+  return accessToken;
 }
 
 /**
