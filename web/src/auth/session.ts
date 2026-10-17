@@ -128,26 +128,45 @@ export async function completeSignIn(search: string): Promise<User> {
 }
 
 /**
+ * Every tab of this app shares one refresh cookie, so a refresh in one tab
+ * must not overlap a refresh in another. The name is per-origin: the lock is
+ * only ever contended by tabs of this same app.
+ */
+const REFRESH_LOCK = "einkaufsliste.auth-refresh";
+
+async function postRefresh(): Promise<string | null> {
+  const response = await fetch("/api/v1/auth/refresh", { method: "POST" });
+  if (!response.ok) {
+    accessToken = null;
+    return null;
+  }
+
+  const session = (await response.json()) as SessionResponse;
+  accessToken = session.access_token;
+  return accessToken;
+}
+
+/**
  * Exchanges the refresh cookie for a new access token.
  *
- * Single-flight: several requests noticing a 401 at once must produce one
- * refresh, not several. Rotation means the second would present a token the
- * first has already spent, which the server correctly reads as a replay and
- * answers by revoking the whole family — signing the user out for being
- * mildly parallel.
+ * Serialised at two levels, because rotation means a second refresh with the
+ * same cookie presents a token the first has already spent:
+ *
+ * - Within this tab, single-flight: several requests noticing a 401 at once
+ *   share one refresh.
+ * - Across tabs, a Web Lock: the installed app and a browser tab, or two tabs
+ *   restored together, take turns. The second waits, then sends the cookie
+ *   the first has just replaced, and rotates that one cleanly (spec §9.2).
+ *
+ * Web Locks exist only in a secure context. A local stack on plain HTTP
+ * reached by LAN address has none, and falls back to tab-local single-flight;
+ * the server's grace window still keeps a lost race from signing anyone out.
  */
 export function refresh(): Promise<string | null> {
   refreshing ??= (async () => {
     try {
-      const response = await fetch("/api/v1/auth/refresh", { method: "POST" });
-      if (!response.ok) {
-        accessToken = null;
-        return null;
-      }
-
-      const session = (await response.json()) as SessionResponse;
-      accessToken = session.access_token;
-      return accessToken;
+      const locks = globalThis.navigator?.locks;
+      return locks ? await locks.request(REFRESH_LOCK, postRefresh) : await postRefresh();
     } finally {
       // Cleared whatever happened, so the next 401 starts a fresh attempt
       // rather than resolving against a stale promise.

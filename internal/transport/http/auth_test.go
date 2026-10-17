@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hprotzek/einkaufsliste/internal/auth"
 	"github.com/hprotzek/einkaufsliste/internal/auth/oidctest"
@@ -32,6 +33,7 @@ type stack struct {
 	server *httptest.Server
 	issuer *oidctest.Issuer
 	client *http.Client
+	pool   *pgxpool.Pool
 }
 
 func newStack(t *testing.T) *stack {
@@ -84,7 +86,7 @@ func newStack(t *testing.T) *stack {
 
 	// A cookie jar, so the test behaves like a browser rather than juggling
 	// headers by hand — which is the point of testing the cookie flow at all.
-	return &stack{server: srv, issuer: issuer, client: srv.Client()}
+	return &stack{server: srv, issuer: issuer, client: srv.Client(), pool: pool}
 }
 
 type sessionBody struct {
@@ -251,7 +253,10 @@ func TestReplayedRefreshCookieEndsTheSession(t *testing.T) {
 	}
 	current := refreshCookieFrom(t, rotatedRes)
 
-	// The attacker replays the older cookie.
+	// The attacker replays the older cookie, some time after capturing it.
+	// A replay within seconds of the rotation is the benign two-tab race,
+	// covered by TestRaceLoserKeepsTheSharedCookie.
+	s.ageUsedTokens(t)
 	replay := s.post(t, "/api/v1/auth/refresh", first)
 	if replay.StatusCode != http.StatusUnauthorized {
 		t.Errorf("replay = %d, want 401", replay.StatusCode)
@@ -272,6 +277,53 @@ func TestReplayedRefreshCookieEndsTheSession(t *testing.T) {
 	honest := s.post(t, "/api/v1/auth/refresh", current)
 	if honest.StatusCode != http.StatusUnauthorized {
 		t.Errorf("the honest client's cookie still worked: %d", honest.StatusCode)
+	}
+}
+
+// ageUsedTokens moves every spent refresh token's use past the reuse grace
+// window, so a replay reads as a thief's rather than a racing tab's.
+func (s *stack) ageUsedTokens(t *testing.T) {
+	t.Helper()
+
+	if _, err := s.pool.Exec(t.Context(),
+		`UPDATE refresh_tokens SET used_at = used_at - interval '1 minute' WHERE used_at IS NOT NULL`,
+	); err != nil {
+		t.Fatalf("ageing used tokens: %v", err)
+	}
+}
+
+// Two tabs share one refresh cookie and refresh at the same moment. The one
+// that loses gets a 401, but its response must not clear the cookie: the
+// browser applies Set-Cookie from both responses, and a clearing header
+// arriving after the winner's would delete the live token the winner just
+// received, signing out both tabs (spec §9.2).
+func TestRaceLoserKeepsTheSharedCookie(t *testing.T) {
+	s := newStack(t)
+
+	res, _ := s.signIn(t, nil)
+	shared := refreshCookieFrom(t, res)
+
+	winner := s.post(t, "/api/v1/auth/refresh", shared)
+	if winner.StatusCode != http.StatusOK {
+		t.Fatalf("winning refresh = %d, want 200", winner.StatusCode)
+	}
+	current := refreshCookieFrom(t, winner)
+
+	// The other tab, a moment later, with the cookie it read before the
+	// winner's response landed.
+	loser := s.post(t, "/api/v1/auth/refresh", shared)
+	if loser.StatusCode != http.StatusUnauthorized {
+		t.Errorf("losing refresh = %d, want 401", loser.StatusCode)
+	}
+	for _, c := range loser.Cookies() {
+		if c.Name == "refresh_token" {
+			t.Errorf("the losing response touched the shared cookie: %q, MaxAge %d", c.Value, c.MaxAge)
+		}
+	}
+
+	// The session survives: the winner's cookie still refreshes.
+	if again := s.post(t, "/api/v1/auth/refresh", current); again.StatusCode != http.StatusOK {
+		t.Errorf("the winner's cookie stopped working: %d", again.StatusCode)
 	}
 }
 

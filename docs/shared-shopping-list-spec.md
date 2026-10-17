@@ -617,7 +617,7 @@ Google Sign-In is free and requires no verification for the non-sensitive scopes
 4. Server exchanges the code with the provider, verifies the ID token signature against the provider's JWKS, checks `iss`, `aud`, `exp`, `nonce`.
 5. Server upserts `identities` + `users`, issues:
    - **Access token:** JWT, 15 min, signed with a server key.
-   - **Refresh token:** opaque random string, hashed in DB, 60 days, **rotated on every use**, with reuse detection (a replayed refresh token revokes the whole family).
+   - **Refresh token:** opaque random string, hashed in DB, 60 days, **rotated on every use**, with reuse detection (a replayed refresh token revokes the whole family) and a short grace window for tabs racing each other (§9.2).
 6. Web stores the refresh token in an `HttpOnly; Secure; SameSite=Lax` cookie. Mobile stores it in Keychain/Keystore.
 
 **Invite acceptance** is a household join, so it is the one flow where an unauthenticated user hits a link and must sign in mid-flow. Preserve the invite token across the OIDC round-trip (in the `state` parameter or a short-lived cookie) so the user lands inside the household rather than on an empty home screen wondering what happened.
@@ -632,6 +632,17 @@ Google Sign-In is free and requires no verification for the non-sensitive scopes
   - Linking adds a row to `identities`; it never merges two existing user rows. If both accounts already exist with lists of their own, leave them alone and offer a manual merge later — silently merging two people's data is unrecoverable.
   - Log every link event with both provider subjects.
 - Apple's App Store rules require offering Sign in with Apple if you offer other third-party sign-in — which is why native iOS and the $99 arrive together, and why neither is needed before then.
+
+### 9.2 Concurrent refreshes from tabs sharing a cookie
+
+Every tab of the app shares one refresh cookie. When two of them refresh at the same moment — the installed app and a browser tab, two tabs restored together, a phone waking up — exactly one rotation wins and the other finds its token spent. Strict reuse detection reads that as a replay and revokes the family, and the revocation takes the winner's brand-new token with it: **both tabs signed out**, for nothing more than being open twice. The review of 17 October 2026 reproduced this.
+
+Two layers keep it from happening, and either alone is not enough:
+
+- **Client: a Web Lock.** `refresh()` runs inside `navigator.locks.request("einkaufsliste.auth-refresh", …)`, so tabs of one browser take turns. The second waits, then sends the cookie the first has just replaced and rotates that one cleanly. Web Locks exist only in a secure context; a plain-HTTP local stack falls back to tab-local single-flight.
+- **Server: a 10-second grace window.** A spent token presented again is a *benign race*, not a replay, when all three hold: it was spent within `auth.ReuseGrace` (10 s); its successor exists and is still live; and nothing descended from that rotation has been used since. A benign race gets the same 401 as any failure, revokes nothing, and **does not clear the cookie** — the browser applies `Set-Cookie` from both responses, and a clearing header arriving after the winner's would delete the live token. Anything else that is spent is a replay and revokes the family as before.
+
+**What the window costs.** A thief who rotates a stolen token first, followed by the victim within 10 seconds, is not caught on that request: the victim gets a 401 and the thief keeps the session. Detection is only deferred — the victim's next refresh, past the window, still holds the old cookie and revokes the family. A replay of an old capture, or one after the chain has moved on, is caught exactly as before. For a family app behind a tunnel, ending spurious sign-outs is worth a 10-second blind spot; the same trade is common in token services as a "reuse interval".
 
 ---
 
@@ -648,7 +659,7 @@ Four layers, only the last of which imports React. This split is what makes the 
 
 ### 10.2 Auth in the browser
 
-Access token in memory only — never `localStorage`, which XSS can read. Refresh token in the `HttpOnly` cookie. A `fetch` wrapper catches 401, refreshes once, retries, and **de-duplicates concurrent refreshes** so ten parallel requests don't fire ten rotations and trip the server's reuse detection (§9), logging the user out for no reason.
+Access token in memory only — never `localStorage`, which XSS can read. Refresh token in the `HttpOnly` cookie. A `fetch` wrapper catches 401, refreshes once, retries, and **de-duplicates concurrent refreshes** so ten parallel requests don't fire ten rotations and trip the server's reuse detection (§9), logging the user out for no reason. Across tabs, a Web Lock does the same job (§9.2).
 
 ### 10.3 Interaction notes
 
@@ -922,6 +933,7 @@ iOS and Android against the same API and the same conformance suite, plus push n
 | 9 | **Silent conflict resolution** | No "someone else changed this" interruptions; only rejected local writes surface (§10.5) |
 | 11 | **Google-only sign-in in R1; Apple deferred to native iOS, possibly forever** | Zero auth cost; provider-agnostic `identities` table and linking tests still ship (§9.1) |
 | 10 | **UTC internally, Norwegian-aware normalisation** | æ/ø/å folding and decimal-comma parsing are correctness requirements, not i18n polish |
+| 14 | **Refresh reuse gets a 10-second grace window for racing tabs** | Two tabs refreshing at once no longer sign each other out. Costs a 10-second blind spot in theft detection, deferred rather than lost (§9.2) |
 
 ## 14b. Next open questions
 
@@ -950,6 +962,7 @@ Smaller, and none of them block starting work:
 | Sync bugs are the hardest part and surface late | Build the changes-endpoint pull path *first*; treat WebSocket as an optimisation. Write tests for concurrent tick, offline-then-delete, and reinstall-from-cursor. |
 | Apple client secret expiry | Automate regeneration; alert 30 days out. |
 | Google-only excludes someone who refuses a Google account | Provider-agnostic identity layer means a second method is additive; decide which one when a real person needs it, not speculatively (§9.1). |
+| Tabs sharing a refresh cookie sign each other out when they refresh at once | Web Lock in the client, 10-second benign-race window on the server that neither revokes nor clears the cookie (§9.2); both covered by tests. |
 | Auto-linking accounts by email is a takeover vector if done loosely | Enforce every rule in §9: both sides verified, never link relay addresses, never merge two existing users. Write tests for the unverified and relay cases specifically. |
 | Home server dies, taking irreplaceable family data with it | Offline-first means everyone keeps a full local copy on their phone; nightly `pg_dump` with an **offsite** copy is the real protection. Test the restore before the family depends on it. |
 | Cloudflare WebSocket idle timeout looks like a sync bug | Heartbeat both directions every ~30s; the pull path must work regardless (§12.3). |

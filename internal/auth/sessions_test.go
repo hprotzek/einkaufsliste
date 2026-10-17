@@ -138,6 +138,7 @@ func TestReplayedTokenRevokesTheWholeFamily(t *testing.T) {
 	}
 
 	// The attacker replays the token they captured earlier.
+	ageUsedTokens(t, pool)
 	_, err = sessions.Rotate(ctx, stolen)
 	if !errors.Is(err, auth.ErrRefreshTokenReused) {
 		t.Fatalf("error = %v, want ErrRefreshTokenReused", err)
@@ -158,7 +159,7 @@ func TestReplayedTokenRevokesTheWholeFamily(t *testing.T) {
 
 // One family being compromised must not sign out the user's other devices.
 func TestRevocationIsScopedToOneFamily(t *testing.T) {
-	sessions, _, userID := newSessions(t)
+	sessions, pool, userID := newSessions(t)
 	ctx := t.Context()
 
 	phone, err := sessions.Issue(ctx, userID)
@@ -177,6 +178,7 @@ func TestRevocationIsScopedToOneFamily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rotating phone: %v", err)
 	}
+	ageUsedTokens(t, pool)
 	if _, err := sessions.Rotate(ctx, phone.Refresh.Token); !errors.Is(err, auth.ErrRefreshTokenReused) {
 		t.Fatalf("replay not detected: %v", err)
 	}
@@ -255,9 +257,134 @@ func TestRevokeAllForUserEndsEverySession(t *testing.T) {
 	}
 }
 
-// Two requests racing with the same token is not hypothetical: it is what a
-// flaky network plus a retry looks like. Exactly one must win, and the loser
-// must be treated as a replay, because a token really was presented twice.
+// ageUsedTokens moves every spent token's use further into the past, past
+// the reuse grace window. Tests that model a thief replaying a token captured
+// earlier use it: a replay seconds after the rotation is the benign race the
+// grace window exists for, and is covered by its own tests below.
+func ageUsedTokens(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE refresh_tokens SET used_at = used_at - interval '1 minute' WHERE used_at IS NOT NULL`,
+	); err != nil {
+		t.Fatalf("ageing used tokens: %v", err)
+	}
+}
+
+// Two tabs (or the installed app and a browser tab) share one refresh
+// cookie. When both refresh at the same moment, exactly one rotation wins.
+// The loser must not take the winner down with it: before the grace window,
+// the loser was read as a replay, the family was revoked, and the token the
+// winner had just received died with it — both tabs signed out.
+func TestConcurrentRefreshKeepsTheWinnerSignedIn(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := context.Background()
+
+	session, err := sessions.Issue(t.Context(), userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		winner string
+		losers []error
+	)
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			s, err := sessions.Rotate(ctx, session.Refresh.Token)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				winner = s.Refresh.Token
+				return
+			}
+			losers = append(losers, err)
+		}()
+	}
+	wg.Wait()
+
+	if winner == "" {
+		t.Fatal("neither rotation won")
+	}
+	for _, err := range losers {
+		if !errors.Is(err, auth.ErrRefreshTokenRaced) {
+			t.Errorf("loser error = %v, want ErrRefreshTokenRaced", err)
+		}
+	}
+	var revoked int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM refresh_tokens WHERE family_id = $1 AND revoked_at IS NOT NULL`,
+		session.FamilyID,
+	).Scan(&revoked); err != nil {
+		t.Fatalf("counting revoked tokens: %v", err)
+	}
+	if revoked != 0 {
+		t.Errorf("revoked tokens after the race = %d, want 0", revoked)
+	}
+	if _, err := sessions.Rotate(ctx, winner); err != nil {
+		t.Errorf("the winning tab's new refresh token no longer works: %v", err)
+	}
+}
+
+// The grace window must not become a way around reuse detection. Once the
+// successor has itself been used, the old token is history, and presenting
+// it again is a replay however quickly it happens.
+func TestReuseAfterTheSuccessorWasUsedIsAReplay(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := t.Context()
+
+	first, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	second, err := sessions.Rotate(ctx, first.Refresh.Token)
+	if err != nil {
+		t.Fatalf("rotating: %v", err)
+	}
+	if _, err := sessions.Rotate(ctx, second.Refresh.Token); err != nil {
+		t.Fatalf("rotating again: %v", err)
+	}
+
+	// Well inside the grace window, but the chain has moved on.
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); !errors.Is(err, auth.ErrRefreshTokenReused) {
+		t.Fatalf("error = %v, want ErrRefreshTokenReused", err)
+	}
+	if live := liveTokens(t, pool, first.FamilyID); live != 0 {
+		t.Errorf("live tokens after replay = %d, want 0", live)
+	}
+}
+
+// After the grace window, a token whose successor is still unused is a
+// replay too: no honest client takes that long to lose a race.
+func TestReuseAfterTheGraceWindowIsAReplay(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := t.Context()
+
+	first, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); err != nil {
+		t.Fatalf("rotating: %v", err)
+	}
+
+	ageUsedTokens(t, pool)
+
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); !errors.Is(err, auth.ErrRefreshTokenReused) {
+		t.Fatalf("error = %v, want ErrRefreshTokenReused", err)
+	}
+	if live := liveTokens(t, pool, first.FamilyID); live != 0 {
+		t.Errorf("live tokens after replay = %d, want 0", live)
+	}
+}
+
+// Many requests racing with the same token: exactly one wins, and every
+// loser is a benign race rather than a replay, because they all arrived
+// while the winner's successor was fresh and unused.
 func TestConcurrentRotationLetsExactlyOneWin(t *testing.T) {
 	sessions, _, userID := newSessions(t)
 	ctx := context.Background()
@@ -273,7 +400,7 @@ func TestConcurrentRotationLetsExactlyOneWin(t *testing.T) {
 		wg        sync.WaitGroup
 		mu        sync.Mutex
 		succeeded int
-		reused    int
+		raced     int
 		other     []error
 	)
 
@@ -289,8 +416,8 @@ func TestConcurrentRotationLetsExactlyOneWin(t *testing.T) {
 			switch {
 			case err == nil:
 				succeeded++
-			case errors.Is(err, auth.ErrRefreshTokenReused):
-				reused++
+			case errors.Is(err, auth.ErrRefreshTokenRaced):
+				raced++
 			default:
 				other = append(other, err)
 			}
@@ -304,7 +431,7 @@ func TestConcurrentRotationLetsExactlyOneWin(t *testing.T) {
 	if len(other) > 0 {
 		t.Errorf("unexpected errors: %v", other)
 	}
-	if reused != racers-1 {
-		t.Errorf("replays detected = %d, want %d", reused, racers-1)
+	if raced != racers-1 {
+		t.Errorf("benign races = %d, want %d", raced, racers-1)
 	}
 }
