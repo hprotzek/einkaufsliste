@@ -435,3 +435,111 @@ func TestConcurrentRotationLetsExactlyOneWin(t *testing.T) {
 		t.Errorf("benign races = %d, want %d", raced, racers-1)
 	}
 }
+
+// The trade-off §9.2 documents, end to end: a thief rotates a stolen token
+// first, the victim's refresh inside the window is a benign race and catches
+// nothing, but the victim's next refresh past the window still holds the old
+// cookie and revokes the family, thief included.
+func TestThiefFirstIsCaughtOnceTheWindowCloses(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := t.Context()
+
+	victim, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	stolen := victim.Refresh.Token
+
+	thief, err := sessions.Rotate(ctx, stolen)
+	if err != nil {
+		t.Fatalf("thief rotating: %v", err)
+	}
+
+	if _, err := sessions.Rotate(ctx, stolen); !errors.Is(err, auth.ErrRefreshTokenRaced) {
+		t.Fatalf("victim inside the window: err = %v, want ErrRefreshTokenRaced", err)
+	}
+
+	ageUsedTokens(t, pool)
+
+	if _, err := sessions.Rotate(ctx, stolen); !errors.Is(err, auth.ErrRefreshTokenReused) {
+		t.Fatalf("victim past the window: err = %v, want ErrRefreshTokenReused", err)
+	}
+	if _, err := sessions.Rotate(ctx, thief.Refresh.Token); !errors.Is(err, auth.ErrInvalidRefreshToken) {
+		t.Errorf("the thief's token survived: err = %v", err)
+	}
+}
+
+// A family that has been revoked, by logout or by reuse detection, has no
+// benign races left in it, however quickly the spent token comes back.
+func TestReuseInARevokedFamilyIsAReplay(t *testing.T) {
+	sessions, _, userID := newSessions(t)
+	ctx := t.Context()
+
+	first, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); err != nil {
+		t.Fatalf("rotating: %v", err)
+	}
+	if err := sessions.RevokeFamily(ctx, first.FamilyID); err != nil {
+		t.Fatalf("revoking: %v", err)
+	}
+
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); !errors.Is(err, auth.ErrRefreshTokenReused) {
+		t.Errorf("error = %v, want ErrRefreshTokenReused", err)
+	}
+}
+
+// An expired successor is not a live session for the race to protect.
+func TestReuseWithAnExpiredSuccessorIsAReplay(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := t.Context()
+
+	first, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); err != nil {
+		t.Fatalf("rotating: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE refresh_tokens SET expires_at = now() - interval '1 second' WHERE used_at IS NULL`,
+	); err != nil {
+		t.Fatalf("expiring the successor: %v", err)
+	}
+
+	if _, err := sessions.Rotate(ctx, first.Refresh.Token); !errors.Is(err, auth.ErrRefreshTokenReused) {
+		t.Errorf("error = %v, want ErrRefreshTokenReused", err)
+	}
+}
+
+// Revocation runs under READ COMMITTED, so a successor minted by a rotation
+// committing at the same moment can escape the UPDATE. Such a straggler must
+// still be useless: no token in a family with any revoked row may rotate.
+func TestATokenInAPartlyRevokedFamilyCannotRotate(t *testing.T) {
+	sessions, pool, userID := newSessions(t)
+	ctx := t.Context()
+
+	first, err := sessions.Issue(ctx, userID)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	straggler, err := sessions.Rotate(ctx, first.Refresh.Token)
+	if err != nil {
+		t.Fatalf("rotating: %v", err)
+	}
+
+	// Revoke everything but the straggler, as a revoke racing its insert
+	// would leave things.
+	if _, err := pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND used_at IS NOT NULL`,
+		first.FamilyID,
+	); err != nil {
+		t.Fatalf("partly revoking: %v", err)
+	}
+
+	if _, err := sessions.Rotate(ctx, straggler.Refresh.Token); !errors.Is(err, auth.ErrInvalidRefreshToken) {
+		t.Errorf("straggler rotated: err = %v, want ErrInvalidRefreshToken", err)
+	}
+}

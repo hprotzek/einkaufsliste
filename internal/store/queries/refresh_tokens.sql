@@ -1,5 +1,10 @@
 -- InsertRefreshToken records a newly issued token. The caller supplies the
 -- family: a fresh uuid for a new sign-in, or the existing one when rotating.
+--
+-- issued_at must stay the column default, now(). IsBenignRefreshRace relies
+-- on a successor's issued_at equalling the spent token's used_at, which holds
+-- only because both are now() in the rotation's transaction. Setting
+-- issued_at explicitly here would quietly break benign-race detection.
 -- name: InsertRefreshToken :one
 INSERT INTO refresh_tokens (user_id, family_id, token_hash, expires_at)
 VALUES ($1, $2, $3, $4)
@@ -13,13 +18,23 @@ RETURNING *;
 -- row must then ask why — missing, already spent, revoked or expired are
 -- very different answers, and only one of them is an attack.
 -- name: ConsumeRefreshToken :one
-UPDATE refresh_tokens
+--
+-- A family with any revoked row is dead as a whole. Revocation runs under
+-- READ COMMITTED, so a successor inserted by a rotation committing at the
+-- same moment can escape the revoking UPDATE; refusing to consume anything
+-- in a partly revoked family makes such a straggler useless.
+UPDATE refresh_tokens AS spent
 SET used_at = now()
-WHERE token_hash = $1
-  AND used_at IS NULL
-  AND revoked_at IS NULL
-  AND expires_at > now()
-RETURNING *;
+WHERE spent.token_hash = $1
+  AND spent.used_at IS NULL
+  AND spent.revoked_at IS NULL
+  AND spent.expires_at > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM refresh_tokens revoked
+      WHERE revoked.family_id = spent.family_id
+        AND revoked.revoked_at IS NOT NULL
+  )
+RETURNING spent.*;
 
 -- GetRefreshTokenByHash reads a token whatever its state, which is how a
 -- failed consume is diagnosed.
@@ -79,4 +94,9 @@ SELECT
         WHERE descendant.family_id = @family_id::uuid
           AND descendant.issued_at >= @used_at::timestamptz
           AND descendant.used_at IS NOT NULL
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM refresh_tokens revoked
+        WHERE revoked.family_id = @family_id::uuid
+          AND revoked.revoked_at IS NOT NULL
     ) AS benign;

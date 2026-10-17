@@ -134,16 +134,52 @@ export async function completeSignIn(search: string): Promise<User> {
  */
 const REFRESH_LOCK = "einkaufsliste.auth-refresh";
 
+/**
+ * A refresh that never answers would otherwise hold the cross-tab lock
+ * forever, and every tab of the app would wait behind it.
+ */
+const REFRESH_TIMEOUT_MS = 15_000;
+
+/**
+ * How long to wait before the one retry after a 401. A tab that lost a race
+ * to another tab gets a 401 while the winner's response is still landing;
+ * by the time this has passed, the shared cookie holds the winner's
+ * successor and the retry rotates that one (spec §9.2).
+ */
+const RACE_RETRY_DELAY_MS = 500;
+
+async function postRefreshOnce(): Promise<Response> {
+  return fetch("/api/v1/auth/refresh", {
+    method: "POST",
+    signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+  });
+}
+
 async function postRefresh(): Promise<string | null> {
-  const response = await fetch("/api/v1/auth/refresh", { method: "POST" });
-  if (!response.ok) {
+  try {
+    let response = await postRefreshOnce();
+
+    // One retry, never more: a second 401 means the session really is over,
+    // and looping would only hammer the server with a dead cookie.
+    if (response.status === 401) {
+      await new Promise((resolve) => setTimeout(resolve, RACE_RETRY_DELAY_MS));
+      response = await postRefreshOnce();
+    }
+
+    if (!response.ok) {
+      accessToken = null;
+      return null;
+    }
+
+    const session = (await response.json()) as SessionResponse;
+    accessToken = session.access_token;
+    return accessToken;
+  } catch {
+    // Timed out or offline. The session may well be fine; there is simply
+    // no fresh access token right now, and the next request will try again.
     accessToken = null;
     return null;
   }
-
-  const session = (await response.json()) as SessionResponse;
-  accessToken = session.access_token;
-  return accessToken;
 }
 
 /**

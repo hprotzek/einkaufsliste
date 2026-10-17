@@ -103,6 +103,17 @@ type sessionBody struct {
 // client posts it, the server exchanges and verifies it.
 func (s *stack) signIn(t *testing.T, mutate func(*oidctest.Token)) (*http.Response, sessionBody) {
 	t.Helper()
+	return s.signInVia(t, mutate, nil)
+}
+
+// signInWithCookie signs in from a browser that still holds a refresh cookie.
+func (s *stack) signInWithCookie(t *testing.T, cookie *http.Cookie) (*http.Response, sessionBody) {
+	t.Helper()
+	return s.signInVia(t, nil, cookie)
+}
+
+func (s *stack) signInVia(t *testing.T, mutate func(*oidctest.Token), cookie *http.Cookie) (*http.Response, sessionBody) {
+	t.Helper()
 
 	tok := s.issuer.ValidToken(clientID)
 	tok.Nonce = nonce
@@ -122,11 +133,17 @@ func (s *stack) signIn(t *testing.T, mutate func(*oidctest.Token)) (*http.Respon
 		t.Fatalf("encoding request: %v", err)
 	}
 
-	res, err := s.client.Post(
-		s.server.URL+"/api/v1/auth/oidc/"+provider+"/callback",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		s.server.URL+"/api/v1/auth/oidc/"+provider+"/callback", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building callback request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+
+	res, err := s.client.Do(req)
 	if err != nil {
 		t.Fatalf("posting callback: %v", err)
 	}
@@ -324,6 +341,37 @@ func TestRaceLoserKeepsTheSharedCookie(t *testing.T) {
 	// The session survives: the winner's cookie still refreshes.
 	if again := s.post(t, "/api/v1/auth/refresh", current); again.StatusCode != http.StatusOK {
 		t.Errorf("the winner's cookie stopped working: %d", again.StatusCode)
+	}
+}
+
+// The hole a grace window alone leaves: a thief rotates first, the victim's
+// refresh is a benign race and gets a 401, and the victim simply signs in
+// again. Their old cookie is never presented past the window, so without
+// this the thief's family would live on for sixty days. Signing in with a
+// refresh cookie still in the browser therefore ends that cookie's family.
+func TestSigningInEndsTheFamilyOfTheOldCookie(t *testing.T) {
+	s := newStack(t)
+
+	res, _ := s.signIn(t, nil)
+	stolen := refreshCookieFrom(t, res)
+
+	thief := s.post(t, "/api/v1/auth/refresh", stolen)
+	if thief.StatusCode != http.StatusOK {
+		t.Fatalf("thief refresh = %d, want 200", thief.StatusCode)
+	}
+	thiefCookie := refreshCookieFrom(t, thief)
+
+	if victim := s.post(t, "/api/v1/auth/refresh", stolen); victim.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("victim refresh = %d, want 401", victim.StatusCode)
+	}
+
+	// The victim signs in again from the same browser, old cookie and all.
+	if again, _ := s.signInWithCookie(t, stolen); again.StatusCode != http.StatusOK {
+		t.Fatalf("second sign-in = %d, want 200", again.StatusCode)
+	}
+
+	if res := s.post(t, "/api/v1/auth/refresh", thiefCookie); res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the thief's cookie still refreshes after the victim signed in again: %d", res.StatusCode)
 	}
 }
 
