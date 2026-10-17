@@ -4,7 +4,7 @@ Shared shopping list for one family. Self-hosted, not commercial. Go + chi backe
 
 ## Project docs
 
-- `docs/spec.md` — requirements, data model, sync protocol, auth, UI decisions
+- `docs/shared-shopping-list-spec.md` — the spec: requirements, data model, sync protocol, auth, UI decisions
 - `docs/implementation-plan.md` — ordered tasks with "done when" criteria
 
 **Read the relevant section on demand — do not load either file wholesale.** The spec is long; pull in the section that covers the task at hand (they are numbered) and leave the rest.
@@ -29,15 +29,17 @@ These are settled decisions with reasons recorded in the spec's decision log (§
 ## Commands
 
 ```bash
-docker compose up -d          # postgres + api + caddy
+make up / make down           # the compose stack: postgres + api + caddy (needs .env)
+make run                      # the API from source against DATABASE_URL
 make migrate                  # goose up
 make generate                 # sqlc + oapi-codegen + openapi-typescript
-make test                     # go test -race ./...
-make lint                     # golangci-lint
-cd web && npm run dev         # vite dev server
-cd web && npm test            # vitest
-npx playwright test           # e2e
+make test                     # go test -race ./... (DATABASE_URL or a testcontainer)
+make lint                     # golangci-lint at the pinned version
+make web / make web-dev       # build the app into web/dist / Vite dev server
+make web-typecheck            # tsc --noEmit
 ```
+
+`make help` lists everything. Vitest and Playwright arrive with M4 (plan tasks 4.7 and 5.9); until then the web app is gated by typecheck and build only.
 
 ## Conventions
 

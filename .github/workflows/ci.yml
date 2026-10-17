@@ -288,9 +288,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # No Go code touches the database yet (tasks 0.4 and 0.5 add it). This
-      # step exists so the service container is proven working now, rather
-      # than being discovered broken later underneath a real test failure.
+      # Proves the service container works before the suite runs, so a
+      # broken database surfaces here as itself rather than underneath a
+      # pile of test failures that all say "connection refused".
       - name: Verify the Postgres service is reachable
         run: |
           pg_isready --host=localhost --port=5432 --username=postgres

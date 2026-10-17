@@ -8,8 +8,11 @@ reconciles.
 
 ## Status
 
-Early. M0 (foundation) is in progress — the service builds, tests, migrates and
-serves `/healthz`. There is no UI and no auth yet. See
+M0 (foundation) is done apart from the home-server deployment (task 0.8). M1
+(auth) is done in code: sign-in with Google, our own access and refresh tokens
+with rotation and reuse detection, and `GET /me`, tested end to end against a
+fake OIDC issuer — but not yet live on a real domain. There are no lists yet;
+they arrive with M2. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for the milestone
 order and [`docs/shared-shopping-list-spec.md`](docs/shared-shopping-list-spec.md)
 for the requirements, data model and sync protocol.

@@ -1,0 +1,45 @@
+# Dependency updates (spec §12.1). Weekly and grouped, so a one-person
+# project gets one PR per ecosystem per week rather than a stream of them.
+# Majors stay ungrouped on purpose: each one deserves its own PR and a read
+# of its changelog. Security updates are not covered by the groups and
+# arrive as soon as they exist.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The build stage of infra/Dockerfile (golang:…-alpine).
+  - package-ecosystem: docker
+    directory: /infra
+    schedule:
+      interval: weekly
+
+  # The images the stack runs: postgres and caddy.
+  - package-ecosystem: docker-compose
+    directory: /infra
+    schedule:
+      interval: weekly
+
+  # Actions are pinned to commit SHAs (spec §12.4); Dependabot keeps the
+  # SHA and its version comment current together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
